@@ -330,6 +330,24 @@ key — mengikuti urutan yang sama:
    hanya membuang waktu.
 3. Jatah habis → mode semi bertanya, mode auto men-skip langkahnya.
 
+Klik punya lapisan tambahan sebelum sampai ke hard refresh, karena tombol yang
+tidak mau diklik jauh lebih sering soal timing daripada soal halaman:
+
+| Lapisan | Yang dilakukan |
+| --- | --- |
+| Klik normal | Menunggu sampai 15s (`CLICK_TIMEOUT`) sampai tombolnya benar-benar bisa diklik |
+| Force click | Melewati pemeriksaan "bisa diklik" — untuk tombol yang ketutup overlay transparan |
+| Ulangi | Pasangan normal+force dicoba 2x (`CLICK_ATTEMPTS`) dengan jeda |
+| Hard refresh | 2x, dan tiap kali elemennya dicari + diklik lagi dari awal |
+| Baru menyerah | Tanya user (semi) atau `StepSkipped` (auto) |
+
+Batasnya 15 detik, bukan 5. `Locator.click` Playwright menunggu elemennya
+terlihat, berhenti bergerak, tidak ketutup, dan enabled — tombol yang masih
+menganimasi (tooltip, toast, panel yang baru terbuka) butuh lebih dari 5 detik
+untuk memenuhi semuanya, dan `humanize` Camoufox menambah biaya gerakan
+kursornya. Itu penyebab `[Copy key] click gagal (Locator.click: Timeout 5000ms
+exceeded)`: kliknya sebenarnya akan berhasil, batasnya saja yang terlalu pendek.
+
 Di mode semi:
 
 ```
@@ -843,6 +861,7 @@ satu nama yang kebetulan sama akan menghapus key yang sudah tersimpan.
 | `Node id <situs> tidak ada di 9router` | Provider node dihapus atau dibuat ulang dengan id berbeda. Ambil id barunya dari URL halaman provider, perbarui `provider_node_id` di `config.py` |
 | Browser tidak muncul di Linux | Set `DISPLAY=:0` di `.env`, atau pilih mode `2` (virtual display) saat run |
 | `Please install Xvfb to use headless mode` | Mode virtual dipilih tapi Xvfb belum ada: `sudo apt install xvfb` |
+| `Locator.click: Timeout 15000ms exceeded` | Tombolnya benar-benar tidak bisa diklik, bukan cuma lambat. Sudah otomatis dicoba force click, diulang, dan di-hard-refresh 2x. Kalau di satu situs selalu begini, kemungkinan selectornya menunjuk elemen yang salah — cek `SITE` di [bansos/selectors.py](bansos/selectors.py) |
 | API key tetap tidak terbaca | Mode semi: tempel sendiri di prompt terakhir. Kalau situsnya mengubah prefix dari `sk-`, lebarkan `API_KEY_PATTERN` di [bansos/selectors.py](bansos/selectors.py) — jangan turunkan `API_KEY_MIN_LENGTH`, itu yang menahan key terpotong ikut terbaca |
 | Key tersimpan masih ada `****` | Seharusnya tidak bisa terjadi — nilai bertopeng ditolak. Kalau situsnya memakai karakter topeng baru, tambahkan ke `KEY_TRUNCATION_MARKS` di [bansos/selectors.py](bansos/selectors.py) |
 | OAuth berhenti di halaman login GitHub | Ditangani otomatis — script login ulang lalu lanjut. Kalau tetap gagal, passwordnya (`GITHUB_PASSWORD`) berbeda dari yang dipakai saat signup |
@@ -863,7 +882,8 @@ antar situs, urutan eskalasi (dua hard refresh dulu, baru user), mode auto (skip
 tanpa prompt, jatah refresh tetap penuh), ekstraksi kode OTP untuk kedua bentuk
 payload, client mail.tm/worker/9router lewat `httpx.MockTransport`, format
 `akun.txt` (header run + baris berlabel situs), label tujuan simpan `RunOptions`,
-dan `GithubAccount` (frozen, jeda pasca-login bukan nol).
+`GithubAccount` (frozen, jeda pasca-login bukan nol), dan lapisan retry klik
+(batas 15s, force click, dua putaran, hard refresh dapat jatahnya sendiri).
 
 Alur browser sungguhan tidak ikut — lihat
 [Yang tidak bisa dites otomatis](#yang-tidak-bisa-dites-otomatis).

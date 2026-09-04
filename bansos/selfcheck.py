@@ -34,6 +34,8 @@ from .browser import (
     proxy_username,
 )
 from .config import (
+    CLICK_ATTEMPTS,
+    CLICK_TIMEOUT,
     HARD_REFRESH_ATTEMPTS,
     POST_LOGIN_DELAY_MAX,
     POST_LOGIN_DELAY_MIN,
@@ -361,6 +363,114 @@ async def check_auto_mode_skips() -> None:
     assert prompt.is_auto() is False
 
 
+# ═══ Klik: normal → force → ulangi → hard refresh → baru menyerah ═════════════
+
+
+class _StubbornLocator:
+    """Locator yang menolak diklik `fail_times` kali, mencatat tiap percobaan."""
+
+    def __init__(self, fail_times: int, log: list[str]):
+        self.fail_times = fail_times
+        self.log = log
+
+    @property
+    def first(self):
+        return self
+
+    async def count(self) -> int:
+        return 1
+
+    async def is_visible(self) -> bool:
+        return True
+
+    async def scroll_into_view_if_needed(self, **_) -> None:
+        return None
+
+    async def click(self, timeout: int = 0, force: bool = False) -> None:
+        self.log.append(f"{'force' if force else 'normal'}@{timeout}")
+        if len(self.log) <= self.fail_times:
+            raise RuntimeError(f"Locator.click: Timeout {timeout}ms exceeded.")
+
+
+class _ClickPage(_FakePage):
+    """Page yang selalu menemukan satu locator, jadi klik yang diuji, bukan pencarian."""
+
+    def __init__(self, locator: _StubbornLocator):
+        super().__init__()
+        self._locator = locator
+
+    def locator(self, _selector):
+        return self._locator
+
+
+async def check_click_retries() -> None:
+    """Klik tidak boleh menyerah setelah satu timeout.
+
+    Bug yang dikejar: `[Copy key] click gagal (Locator.click: Timeout 5000ms
+    exceeded.)` lalu langkahnya langsung dianggap gagal. Sekarang tiap percobaan
+    memakai batas yang lebih longgar, force click dicoba, dan hard refresh dapat
+    jatahnya sendiri sebelum user ditanya.
+    """
+    original_delay, page_mod.human_delay = page_mod.human_delay, lambda *_a, **_k: 0.0
+    original_ask = page_mod.ask_retry
+    try:
+        # Batas per klik harus 15s, bukan 5s.
+        log: list[str] = []
+        loc = _StubbornLocator(fail_times=0, log=log)
+        assert await page_mod._try_click(loc, CLICK_TIMEOUT, "Copy key") is True
+        assert log == [f"normal@{CLICK_TIMEOUT}"], log
+        assert CLICK_TIMEOUT == 15000, CLICK_TIMEOUT
+
+        # Klik normal gagal → force dicoba di percobaan yang sama.
+        log = []
+        loc = _StubbornLocator(fail_times=1, log=log)
+        assert await page_mod._try_click(loc, CLICK_TIMEOUT, "Copy key") is True
+        assert log == [f"normal@{CLICK_TIMEOUT}", f"force@{CLICK_TIMEOUT}"], log
+
+        # Normal+force gagal → putaran kedua, bukan langsung menyerah.
+        log = []
+        loc = _StubbornLocator(fail_times=3, log=log)
+        assert await page_mod._try_click(loc, CLICK_TIMEOUT, "Copy key") is True
+        assert len(log) == 4, log
+
+        # Semua putaran gagal → False, tepat 2 klik per putaran.
+        log = []
+        loc = _StubbornLocator(fail_times=99, log=log)
+        assert await page_mod._try_click(loc, CLICK_TIMEOUT, "Copy key") is False
+        assert len(log) == CLICK_ATTEMPTS * 2, log
+
+        # Elemen ada tapi tak pernah bisa diklik: hard refresh dapat jatahnya,
+        # baru user ditanya. 's' → StepSkipped, bukan False yang diam-diam.
+        log = []
+        page = _ClickPage(_StubbornLocator(fail_times=99, log=log))
+        page_mod.ask_retry = lambda _label: _answer(False)
+        try:
+            await page_mod.click_first_visible(page, ["#copy"], label="Copy key")
+        except StepSkipped:
+            pass
+        else:
+            raise AssertionError("klik yang tidak pernah berhasil harus melempar StepSkipped")
+        assert page.reloads == HARD_REFRESH_ATTEMPTS, page.reloads
+        # (1 putaran awal + 1 per hard refresh) × 2 klik per putaran.
+        assert len(log) == (HARD_REFRESH_ATTEMPTS + 1) * CLICK_ATTEMPTS * 2, len(log)
+
+        # optional=True: ikut putaran normal+force, tapi tidak me-hard-refresh.
+        log = []
+        page = _ClickPage(_StubbornLocator(fail_times=99, log=log))
+        assert await page_mod.click_first_visible(
+            page, ["#copy"], label="Copy key", optional=True
+        ) is False
+        assert page.reloads == 0, page.reloads
+        assert len(log) == CLICK_ATTEMPTS * 2, len(log)
+    finally:
+        page_mod.human_delay = original_delay
+        page_mod.ask_retry = original_ask
+
+
+async def _answer(value):
+    return value
+
+
 def check_mail_parsing() -> None:
     # Worker: text_content / html_content sebagai string.
     assert extract_code(None, "your code is 12345678") == "12345678"
@@ -613,6 +723,7 @@ async def main() -> None:
     check_key_uniqueness()
     await check_retry_escalation()
     await check_auto_mode_skips()
+    await check_click_retries()
     check_mail_parsing()
     check_username()
     check_storage()

@@ -33,6 +33,21 @@ WARMUP_TIMEOUT = 12.0
 LOCATOR_CALL_TIMEOUT = 3.0
 FIND_BUDGET = 8.0
 
+# Batas satu percobaan klik, dalam milidetik (satuan Playwright).
+#
+# 15s, bukan 5s: `Locator.click` menunggu elemennya benar-benar bisa diklik —
+# terlihat, berhenti bergerak, tidak ketutup, dan enabled. Tombol yang masih
+# menganimasi (tooltip, toast, panel yang baru terbuka) butuh waktu lebih dari
+# 5s untuk memenuhi syarat itu, dan `humanize` Camoufox menambah biaya gerakan
+# kursornya. Batas yang terlalu pendek membuat klik yang sebenarnya akan berhasil
+# dilaporkan gagal.
+CLICK_TIMEOUT = 15000
+
+# Berapa kali pasangan (klik normal → force click) diulang sebelum menyerah.
+# Dua cukup: kegagalan yang bertahan setelah force click hampir selalu berarti
+# halamannya yang salah keadaan, dan itu ditangani hard refresh di lapisan atas.
+CLICK_ATTEMPTS = 2
+
 # Jumlah titik yang dikirim saat drag slider captcha. Sengaja kecil: Camoufox
 # sudah menginterpolasi tiap gerakan, dan tiap panggilan mouse.move berbiaya
 # ~0.2-0.8s — 50 langkah berarti drag setengah menit dan captcha kedaluwarsa.

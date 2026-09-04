@@ -14,6 +14,8 @@ import time
 from .config import (
     CF_CHALLENGE_TIMEOUT,
     CF_POLL_INTERVAL,
+    CLICK_ATTEMPTS,
+    CLICK_TIMEOUT,
     FIND_BUDGET,
     HARD_REFRESH_ATTEMPTS,
     LOCATOR_CALL_TIMEOUT,
@@ -97,54 +99,91 @@ async def resolve_locator(
 
 
 async def _try_click(loc, timeout: int, label: str) -> bool:
-    try:
-        await asyncio.sleep(human_delay(0.3, 0.8))
-        await loc.click(timeout=timeout)
-    except Exception as exc:
-        print(f"⚠️  [{label}] click gagal ({exc}), coba force click...")
+    """Klik normal → force click, diulang `CLICK_ATTEMPTS` kali.
+
+    Force click melewati pemeriksaan "bisa diklik" milik Playwright, jadi berguna
+    untuk tombol yang ketutup overlay transparan atau yang tidak pernah dianggap
+    stabil. Tapi force click juga tidak menunggu apa pun, jadi klik normal dicoba
+    lebih dulu — force hanya cadangan.
+    """
+    for attempt in range(1, CLICK_ATTEMPTS + 1):
         try:
+            await asyncio.sleep(human_delay(0.3, 0.8))
+            await loc.click(timeout=timeout)
+            await asyncio.sleep(human_delay(0.5, 1.2))
+            return True
+        except Exception as exc:
+            print(f"⚠️  [{label}] click gagal ({attempt}/{CLICK_ATTEMPTS}): {exc}")
+
+        try:
+            print(f"   → force click [{label}]...")
             await loc.click(timeout=timeout, force=True)
-        except Exception:
-            return False
-    await asyncio.sleep(human_delay(0.5, 1.2))
-    return True
+            await asyncio.sleep(human_delay(0.5, 1.2))
+            return True
+        except Exception as exc:
+            print(f"⚠️  [{label}] force click gagal ({attempt}/{CLICK_ATTEMPTS}): {exc}")
+
+        if attempt < CLICK_ATTEMPTS:
+            await asyncio.sleep(human_delay(1.0, 2.0))
+    return False
 
 
 async def click_first_visible(
     page,
     selectors: list[str],
-    timeout: int = 5000,
+    timeout: int = CLICK_TIMEOUT,
     retries: int = 3,
     label: str = "",
     optional: bool = False,
     escalate: bool = True,
 ) -> bool:
-    """optional=True: tidak ketemu langsung False tanpa retry/prompt."""
+    """optional=True: tidak ketemu langsung False tanpa retry/prompt.
+
+    Urutan penuh saat elemennya ada tapi tidak mau diklik: klik normal → force →
+    ulangi → hard refresh (jatah `HARD_REFRESH_ATTEMPTS`, cari + klik lagi tiap
+    kali) → baru tanya user, atau skip di mode auto.
+
+    Klik `optional` ikut putaran normal+force yang sama, tapi tidak me-hard-refresh
+    sendiri: pemanggilnya sudah dibungkus `retry_after_refresh` di lapisan atas
+    (mis. tombol Copy di dalam `sites.capture_key`), jadi refresh di sini hanya
+    menggandakan jumlah muat ulang untuk satu kegagalan.
+    """
     label = label or selectors[0]
     if optional:
         loc = await find_visible(page, selectors)
-        if loc is None:
-            return False
-    else:
-        loc = await resolve_locator(page, selectors, label, retries, escalate=escalate)
-        if loc is None:
-            return False
-        if loc is MANUAL:
-            return True
+        return loc is not None and await _try_click(loc, timeout, label)
+
+    loc = await resolve_locator(page, selectors, label, retries, escalate=escalate)
+    if loc is None:
+        return False
+    if loc is MANUAL:
+        return True
 
     if await _try_click(loc, timeout, label):
         return True
-    if optional or not escalate:
+    if not escalate:
         return False
 
     # Elemen ketemu tapi tidak mau diklik: ketutup overlay, atau node-nya sudah
-    # dirender ulang sehingga handle-nya basi. Muat ulang lalu coba sekali lagi
-    # dengan escalate=False supaya tidak berputar.
-    await refresh_before_ask(page, label)
+    # dirender ulang sehingga handle-nya basi. Hard refresh lalu cari + klik lagi,
+    # dengan jatah yang sama seperti langkah lain.
+    for attempt in range(1, HARD_REFRESH_ATTEMPTS + 1):
+        await refresh_before_ask(page, label, attempt)
+        loc = await find_visible(page, selectors)
+        if loc is not None and await _try_click(loc, timeout, label):
+            return True
+
+    print(f"✗ [{label}] tetap tidak bisa diklik setelah {HARD_REFRESH_ATTEMPTS}x hard refresh")
+    choice = await ask_retry(label)
+    if choice is False:
+        raise StepSkipped(label)
+    if choice is MANUAL:
+        return True
+    # User minta coba lagi: satu putaran penuh lagi, tapi escalate=False supaya
+    # pertanyaannya tidak menumpuk kalau tetap gagal.
     return await click_first_visible(
         page, selectors, timeout, retries, label, optional, escalate=False
     )
-
 
 async def fill_input(
     page,
