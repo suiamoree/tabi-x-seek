@@ -23,9 +23,9 @@ from .page import (
 )
 from .selectors import (
     EMAIL_REJECTED_TEXTS,
+    GITHUB_HOME,
     GITHUB_LOGIN,
     GITHUB_SIGNUP,
-    GITHUB_SIGNUP_URL,
     OTP_INPUTS,
 )
 
@@ -59,46 +59,50 @@ async def _wait_signup_form(page, timeout: float = 15.0) -> bool:
 
 
 async def open_signup(page, escalate: bool = True) -> bool:
-    """Masuk halaman signup, warmup lewat homepage pada percobaan pertama.
+    """Masuk halaman signup lewat homepage, bukan deep-link.
 
-    Deep-link ke /signup tanpa referer/cookie adalah pola bot; tapi warmup tidak
-    boleh membuat proses berhenti di homepage, jadi hasilnya selalu diverifikasi
-    dan di-fallback ke goto langsung.
+    Jalurnya penting, bukan cuma tujuannya. `goto` langsung ke `/signup` ditolak
+    DataDome dengan HTTP 403 dan halaman blokir di iframe `captcha-delivery.com`,
+    walau memakai fingerprint yang sama dan walau referer diisi manual — terbukti
+    di probe: goto telanjang 403 + iframe blokir, goto dengan referer 403,
+    sedangkan klik dari homepage 200 dengan form ter-render.
+
+    Yang membedakan bukan header, tapi jejak navigasinya: klik dari homepage
+    membawa sinyal in-page (event pointer, history entry, token yang ditanam
+    halaman) yang tidak bisa ditiru oleh navigasi top-level.
 
     `escalate=False` saat dipanggil dari dalam langkah lain yang sudah punya
     eskalasinya sendiri, supaya user tidak ditanya dua kali bertingkat.
     """
-    first = True
 
     async def _attempt() -> bool:
-        nonlocal first
-        if first:
-            first = False
-            print("→ Warmup: buka github.com dulu...")
-            if await goto(page, "https://github.com/"):
-                await raise_if_bot_blocked(page)
-                await warmup(page)
-
-                link = await find_visible(page, GITHUB_SIGNUP["signup_link"])
-                if link is not None:
-                    print("→ Klik link Sign up dari homepage...")
-                    try:
-                        await link.click(timeout=5000)
-                        await settle(page)
-                    except Exception as exc:
-                        print(f"⚠️  Klik Sign up gagal: {exc}")
-
-        if not await _on_signup_page(page, budget=2.0):
-            print(f"→ Form signup belum ada (url={page.url}), goto langsung...")
-            await goto(page, GITHUB_SIGNUP_URL)
-
+        print("→ Buka github.com dulu (deep-link ke /signup diblokir)...")
+        if not await goto(page, GITHUB_HOME):
+            return False
         await raise_if_bot_blocked(page)
+        await warmup(page)
+
+        link = await find_visible(page, GITHUB_SIGNUP["signup_link"])
+        if link is None:
+            print("⚠️  Link Sign up tidak ketemu di homepage")
+            return False
+
+        print("→ Klik link Sign up dari homepage...")
+        try:
+            await link.click(timeout=5000)
+        except Exception as exc:
+            print(f"⚠️  Klik Sign up gagal: {exc}")
+            return False
+        await settle(page)
+        await raise_if_bot_blocked(page)
+
         if await _wait_signup_form(page):
             print(f"✓ Form signup siap: {page.url}")
             return True
 
         # Sampai di /signup tapi form tidak pernah render → reload sekali; SPA
-        # GitHub kadang gagal mount saat navigasi dari homepage.
+        # GitHub kadang gagal mount saat navigasi dari homepage. Reload aman di
+        # sini karena URL-nya sudah punya jejak navigasi yang diterima.
         print(f"⚠️  Form signup belum render (url={page.url})")
         if "signup" in page.url.lower():
             print("→ Reload halaman signup...")

@@ -63,6 +63,29 @@ async def _pick_targets() -> tuple[bool, bool]:
     )
 
 
+async def _pick_proxy(config: Settings) -> bool:
+    """Nyalakan proxy untuk run ini. Default mengikuti PROXY_ENABLED di .env.
+
+    Ditanyakan di CLI karena reputasi IP menentukan apakah GitHub memblokir
+    pendaftaran, dan jawaban terbaiknya berubah dari sesi ke sesi: IP rumah bisa
+    lolos hari ini lalu ditandai besok, dan sebaliknya untuk exit node proxy.
+    """
+    if not (config.proxy_user and config.proxy_pass):
+        print("\n(PROXY_USER/PROXY_PASS kosong di .env — proxy tidak bisa dipakai)")
+        return False
+
+    where = f"{config.proxy_host}" + (f", negara {config.proxy_country}" if config.proxy_country else "")
+    return await _pick(
+        "Proxy",
+        {
+            "1": (f"pakai proxy ({where})", True),
+            "2": ("tanpa proxy — pakai IP koneksi ini", False),
+        },
+        default_key="1" if config.proxy_enabled else "2",
+        note="satu akun = satu sessid = satu IP; ganti PROXY_COUNTRY di .env kalau sering diblokir",
+    )
+
+
 async def _run_mode() -> bool:
     """True = auto (tanpa prompt sama sekali), False = semi (eskalasi ke user)."""
     return await _pick(
@@ -85,27 +108,33 @@ async def _browser_mode() -> bool | str:
 async def _ask_options(config: Settings) -> tuple[Settings, RunOptions, int] | None:
     """Semua pertanyaan sebelum run. None kalau jumlah akun tidak valid.
 
-    `config` dikembalikan dalam bentuk baru dengan `sites` yang sudah disaring,
-    jadi sisa alur tidak perlu tahu bahwa user pernah memilih subset.
+    `config` dikembalikan dalam bentuk baru dengan `sites` yang sudah disaring dan
+    `proxy_enabled` sesuai pilihan, jadi sisa alur tidak perlu tahu bahwa user
+    pernah memilih apa pun.
     """
     total = await _account_count()
     if not total:
         return None
 
+    use_proxy = await _pick_proxy(config)
     chosen = await _pick_sites(config.sites)
     save_file, push_router = await _pick_targets()
     prompt.set_auto(await _run_mode())
     options = RunOptions(
-        browser_mode=await _browser_mode(), save_file=save_file, push_router=push_router
+        browser_mode=await _browser_mode(),
+        save_file=save_file,
+        push_router=push_router,
+        use_proxy=use_proxy,
     )
 
     mode = "auto (tanpa prompt)" if prompt.is_auto() else "semi (eskalasi ke user)"
     print(f"\n→ Jumlah akun  : {total}")
+    print(f"→ Proxy        : {'aktif — ' + config.proxy_host if use_proxy else 'tidak dipakai'}")
     print(f"→ Situs        : {', '.join(site.name for site in chosen)}")
     print(f"→ Simpan ke    : {options.targets}")
     print(f"→ Mode jalan   : {mode}")
     print(f"→ Mode browser : {browser.mode_label(options.browser_mode)}")
-    return dataclasses.replace(config, sites=chosen), options, total
+    return dataclasses.replace(config, sites=chosen, proxy_enabled=use_proxy), options, total
 
 
 async def main() -> None:

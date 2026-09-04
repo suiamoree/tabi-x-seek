@@ -20,9 +20,14 @@ login OAuth ke situs penyedia API key ([Tabitoken](https://tabitoken.com) dan
 
 Browsernya [Camoufox](https://github.com/daijro/camoufox) — Firefox sungguhan
 dengan fingerprint yang disamarkan, dijalankan lewat Playwright. Sebelum run, CLI
-menanyakan situs mana yang dikerjakan, hasilnya disimpan ke mana, **mode jalan**
-(semi atau auto), dan **mode browser** (non-headless, virtual display Xvfb, atau
-headless).
+menanyakan jumlah akun, proxy, situs mana yang dikerjakan, hasilnya disimpan ke
+mana, **mode jalan** (semi atau auto), dan **mode browser** (non-headless, virtual
+display Xvfb, atau headless).
+
+<p align="center">
+  <img alt="Prompt CLI: jumlah akun, proxy, situs, tujuan simpan, mode jalan, mode browser"
+       src="assets/demo.png" width="620">
+</p>
 
 > [!WARNING]
 > Script ini mengotomasi pendaftaran akun di layanan pihak ketiga. Pastikan kamu
@@ -37,7 +42,7 @@ headless).
 | 🧭 [Alur kerja](#-alur-kerja) | Apa yang terjadi per akun |
 | 📦 [Persiapan](#-persiapan) | Install, `run.bat` / `run.sh` |
 | 🔧 [Konfigurasi](#-konfigurasi) | Isi `.env` |
-| 🚀 [Menjalankan](#-menjalankan) | Situs, tujuan simpan, dua mode |
+| 🚀 [Menjalankan](#-menjalankan) | Proxy, situs, tujuan simpan, dua mode |
 | 🩹 [Kalau sebuah langkah gagal](#-kalau-sebuah-langkah-gagal) | Retry, hard refresh, semi vs auto |
 | 📤 [Hasil](#-hasil) | Format `akun.txt` + 9router |
 | 🚨 [Batasan & known issues](#-batasan--known-issues) | **Baca ini** |
@@ -67,8 +72,9 @@ flowchart TD
 Urutan per akun, lebih detail:
 
 1. Browser baru dijalankan dengan satu session proxy (satu IP tetap).
-2. Buka `github.com` dulu, gerakkan mouse sebentar, baru klik ke halaman signup.
-   Membuka `/signup` langsung tanpa referer adalah pola bot.
+2. Buka `github.com`, gerakkan mouse sebentar, lalu **klik link Sign up**. Buka
+   `/signup` langsung lewat URL ditolak (HTTP 403) — lih
+   [Deep-link /signup diblokir](#deep-link-signup-diblokir).
 3. Selesaikan slider captcha GitHub.
 4. **Baru** generate alamat email. Kalau captcha gagal, alamat tidak terbuang.
 5. Isi email, password, username, submit, ambil kode OTP 8 digit dari inbox.
@@ -190,11 +196,12 @@ di [Cara kerjanya di dalam](#-cara-kerjanya-di-dalam).
 python bansos.py       # atau run.bat / ./run.sh
 ```
 
-Lima pertanyaan sebelum jalan:
+Enam pertanyaan sebelum jalan:
 
 | Pertanyaan | Pilihan |
 | --- | --- |
 | Jumlah akun | angka ≥ 1 |
+| [Proxy](#proxy-per-run) | pakai proxy atau IP koneksi ini |
 | Situs yang dikerjakan | semua, Tabitoken saja, atau SeekAI saja |
 | Simpan hasil ke | `akun.txt` + 9router, `akun.txt` saja, atau 9router saja |
 | [Mode jalan](#mode-jalan) | semi atau auto |
@@ -205,6 +212,16 @@ script login dan memastikan node id tiap situs benar-benar ada di dashboard
 sebelum akun pertama dibuat — kalau ada yang salah, kamu tahu sekarang, bukan
 setelah membuang beberapa akun. Memilih "akun.txt saja" tidak menyentuh 9router
 sama sekali, jadi `NINEROUTER_PASSWORD` boleh kosong.
+
+### Proxy per run
+
+Ditanyakan tiap run, bukan hanya dibaca dari `.env`, karena reputasi IP yang
+menentukan lolos atau tidaknya pendaftaran GitHub berubah dari sesi ke sesi: IP
+rumah bisa lolos hari ini lalu ditandai besok, dan sebaliknya untuk exit node
+proxy. Defaultnya mengikuti `PROXY_ENABLED` di `.env`.
+
+Pertanyaannya dilewati kalau `PROXY_USER`/`PROXY_PASS` kosong — tidak ada yang
+bisa dipakai. Kalau sering diblokir di negara tertentu, ganti `PROXY_COUNTRY`.
 
 ### Mode jalan
 
@@ -244,6 +261,12 @@ TABI X SEEK AUTOMATION
 ============================================================
 Mau generate berapa akun? 2
 
+Proxy:
+  1. pakai proxy (gw.dataimpulse.com:823, negara id)  ← default
+  2. tanpa proxy — pakai IP koneksi ini
+  (satu akun = satu sessid = satu IP; ganti PROXY_COUNTRY di .env kalau sering diblokir)
+Pilih [1/2] (Enter = default):
+
 Situs yang dikerjakan:
   1. semua (Tabitoken, SeekAI)  ← default
   2. Tabitoken saja
@@ -268,6 +291,7 @@ Mode browser:
 Pilih [1/3] (Enter = default):
 
 → Jumlah akun  : 2
+→ Proxy        : aktif — gw.dataimpulse.com:823
 → Situs        : Tabitoken, SeekAI
 → Simpan ke    : akun.txt + 9router
 → Mode jalan   : semi (eskalasi ke user)
@@ -328,6 +352,17 @@ lagi — halaman yang dimuat ulang mengosongkan field yang sudah terisi.
 Slider captcha dan challenge Cloudflare juga di-hard-refresh dulu, dengan satu
 pengecualian: setelah kamu menyelesaikan captcha manual, halaman tidak dimuat
 ulang lagi supaya hasilnya tidak ikut hilang.
+
+Satu jenis kegagalan tidak ikut pola ini: **halaman blokir anti-bot**. Itu
+keputusan final di sisi server, bukan challenge yang selesai sendiri, jadi tidak
+ditunggu dan tidak di-refresh — browsernya langsung ditutup dan akun itu dicoba
+ulang dengan fingerprint (dan IP, kalau proxy aktif) yang baru.
+
+```
+🚫 Blokir anti-bot: 'We detected unusual activity'
+   IP + fingerprint sudah ditandai → relaunch dengan identitas baru
+↻ Blokir anti-bot (attempt 1/3) → identitas baru
+```
 
 ## 📤 Hasil
 
@@ -392,12 +427,42 @@ Domain sendiri lewat Cloudflare Worker tidak dipakai orang lain, jadi tidak
 membawa reputasi buruk. Praktisnya: pakai `worker`. `mailtm` hanya berguna untuk
 mengetes alur script-nya, bukan untuk menghasilkan akun.
 
+### Deep-link /signup diblokir
+
+> [!CAUTION]
+> **Terjadi.** `https://github.com/signup` dibuka langsung lewat URL selalu
+> dijawab **HTTP 403** dengan halaman blokir DataDome di iframe
+> `geo.captcha-delivery.com`. Bukan soal fingerprint dan bukan soal referer.
+
+Diukur langsung, satu browser, konfigurasi sama:
+
+| Jalur | Hasil |
+| --- | --- |
+| `goto /signup` (tanpa referer) | 403, iframe blokir, form tidak ada |
+| `goto /signup` + `referer: github.com` | 403 |
+| homepage → `goto /signup` + referer | 403 |
+| homepage → **klik link Sign up** | 200, form ter-render |
+
+Mengganti opsi launch tidak mengubah apa pun — Camoufox default, tanpa
+`block_webrtc`, tanpa geometri layar kustom, tanpa `exclude_addons`, semuanya 403.
+Yang membedakan adalah jejak navigasinya: klik dari homepage membawa sinyal in-page
+yang tidak bisa ditiru oleh navigasi top-level.
+
+Karena itu `open_signup` **tidak punya fallback `goto`** dan selalu masuk lewat
+homepage. Kalau link Sign up tidak ketemu di homepage, langkahnya dilaporkan gagal
+dan diulang dari homepage lagi — bukan dipaksa lewat URL.
+
 ### Akun GitHub tetap bisa kena flag walau semuanya benar
 
 Tanpa proxy, semua akun datang dari satu IP. GitHub menoleransi beberapa akun,
 lalu mulai menampilkan `We detected unusual activity`. Script menanganinya dengan
 relaunch memakai fingerprint baru — tapi **tanpa proxy IP-nya tetap sama, jadi
-relaunch tidak menolong.** Isi `PROXY_*` di `.env` kalau mau bikin banyak.
+relaunch tidak menolong.** Nyalakan proxy di prompt awal kalau mau bikin banyak.
+
+Sebaliknya juga terjadi: exit node proxy yang dipakai banyak orang bisa lebih cepat
+diblokir daripada IP rumah. Itu sebabnya proxy jadi pilihan per run, bukan setelan
+tetap — kalau satu sisi mentok, coba sisi lain, dan ganti `PROXY_COUNTRY` kalau
+satu negara sedang jelek.
 
 Blokir yang datang belakangan juga mungkin: akun jadi, lalu di-suspend setelah
 GitHub mengaitkan beberapa akun ke satu IP atau satu pola fingerprint. Tidak
@@ -405,9 +470,9 @@ terdeteksi dari dalam script.
 
 ### Slider captcha tidak selalu lolos otomatis
 
-Drag-nya dibuat mirip manusia (kurva bezier, ease-in-out, micro-pause, overshoot
-lalu koreksi) dan biasanya lolos. Tapi kalau GitHub sedang sensitif — biasanya
-setelah beberapa akun dari IP yang sama — mode semi akan meminta kamu
+Drag-nya dibuat mirip manusia (ease-in-out, micro-pause, overshoot lalu koreksi,
+interpolasi oleh Camoufox) dan biasanya lolos. Tapi kalau GitHub sedang sensitif —
+biasanya setelah beberapa akun dari IP yang sama — mode semi akan meminta kamu
 menyelesaikannya manual, dan mode auto men-skip akun itu. Script tidak mencoba
 mengakali captcha-nya.
 
@@ -657,17 +722,72 @@ readText() self   : 'sk-ZZZZ1111...abcd'
 paste ke textarea : 'sk-ZZZZ1111...abcd'
 ```
 
-Dua saringan sebelum sebuah nilai diterima sebagai key:
+Tiga saringan sebelum sebuah nilai diterima sebagai key:
 
 - **Bentuknya** harus berpola `sk-` dengan panjang minimal 40 karakter. Daftar key
   menampilkan versi terpotong (`sk-AbCd1234EfG...`) yang juga cocok polanya; key
   sungguhan 51 karakter sedangkan potongannya sekitar 10-15.
+- **Tidak bertopeng.** Konsekuensi dari membaca DOM: UI sering menampilkan key
+  dengan tengahnya disembunyikan (`sk-abc••••••••xyz`, `sk-abc********xyz`), dan
+  jumlah karakter topengnya berubah-ubah. Yang diperiksa adalah karakter tepat
+  sebelum dan sesudah match — karakter topeng bukan alnum jadi tidak pernah masuk
+  ke match itu sendiri, dan panjang topengnya jadi tidak perlu diketahui. Bullet,
+  asterisk, dan ellipsis semuanya membatalkan kandidat. Pemisah biasa (kutip,
+  kurung, titik koma) tidak, jadi key di dalam JSON tetap terbaca.
 - **Belum pernah muncul** di run ini. Key Tabitoken dan SeekAI tidak mungkin sama,
   dan dua akun tidak mungkin mendapat key identik — nilai yang berulang berarti
   pembacaannya salah, hampir selalu clipboard yang basi. `accept_key` menolaknya,
   jadi key pertama (Tabitoken, yang dikerjakan lebih dulu) yang dipegang dan situs
   kedua dihitung gagal. Tanpa itu, `POST /api/providers` yang kedua akan menimpa
   connection pertama dengan key yang sama.
+</details>
+
+<details>
+<summary><b>Gerakan mouse tidak diinterpolasi di Python</b></summary>
+
+`humanize` Camoufox menghaluskan **setiap** `mouse.move` di level browser, dan
+nilainya adalah durasi maksimum satu gerakan. Artinya kurva yang dipecah sendiri
+di Python jadi 8-16 titik membayar biaya itu 8-16 kali.
+
+Terukur, `humanize=True` (default, sampai 1.5s per gerakan):
+
+```
+10x mouse.move, humanize=True   : 7.73s   (~0.77s per gerakan)
+10x mouse.move, humanize=False  : 0.05s
+drag 50 langkah, humanize=True  : 33.95s
+drag 50 langkah, humanize=0.2   : 11.06s
+```
+
+Itu penyebab `⚠️ [warmup] timeout 8.0s — dilanjut` yang muncul di tiap akun:
+warmup dengan kurva bezier butuh ~34s, sedangkan batasnya 8s — jadi selalu
+terpotong di tengah dan jejak input yang seharusnya dibuat tidak pernah lengkap.
+Drag captcha 45-70 frame kena hal yang sama dan bisa kedaluwarsa sebelum selesai.
+
+Sekarang: `humanize=0.3` di `browser.py`, interpolasi diserahkan ke Camoufox,
+warmup mengirim beberapa gerakan langsung (bukan puluhan titik kurva), dan drag
+slider memakai 6-10 langkah. `WARMUP_TIMEOUT` dinaikkan ke 12s sebagai jaring
+pengaman, bukan sebagai target.
+</details>
+
+<details>
+<summary><b>Deep-link /signup diblokir</b> — jalan masuknya lewat homepage</summary>
+
+`goto("https://github.com/signup")` selalu dijawab HTTP 403 dengan halaman blokir
+DataDome, sedangkan mengklik link Sign up dari homepage lolos dengan 200. Referer
+manual dan variasi opsi launch tidak mengubahnya. Detail pengukurannya di
+[Deep-link /signup diblokir](#deep-link-signup-diblokir).
+
+Efeknya di kode: `github.open_signup` tidak punya fallback `goto` sama sekali, dan
+`GITHUB_SIGNUP_URL` di `selectors.py` tinggal jadi penanda, bukan tujuan navigasi.
+Deteksi blokirnya juga diperbaiki — halaman DataDome hidup di dalam iframe
+`geo.captcha-delivery.com`, jadi `has_text` sekarang memeriksa semua frame, bukan
+hanya main frame, dan `BOT_BLOCK_SELECTORS` mencocokkan iframe-nya langsung supaya
+tidak bergantung pada teks yang bisa berubah.
+
+Halaman blokir juga tidak lagi diperlakukan sebagai challenge yang bisa ditunggu:
+`pass_cloudflare` memeriksanya lebih dulu dan langsung kembali. Sebelumnya blokir
+DataDome menghabiskan 60s tunggu + dua kali muat ulang sebelum akhirnya gagal —
+tiga menit terbuang per akun.
 </details>
 
 <details>
@@ -683,14 +803,17 @@ satu nama yang kebetulan sama akan menghapus key yang sudah tersimpan.
 
 | Pesan / gejala | Penyebab & tindakan |
 | --- | --- |
-| `Please enable JS and disable any ad blocker` | Halaman challenge Cloudflare. Pastikan `PROXY_HOST` masih port `823` dan `PROXY_USER` tidak diubah manual — script menyusun `sessid` sendiri. Kalau paket proxy-mu tidak mendukung `sessid`, pakai port sticky `gw.dataimpulse.com:10000` |
-| `We detected unusual activity` | IP + fingerprint sudah ditandai. Script relaunch dengan identitas baru sampai 3 kali. Tanpa proxy IP-nya tetap sama, jadi isi `PROXY_*` di `.env` |
+| `403` / iframe `captcha-delivery.com` saat buka signup | Halaman blokir DataDome. Script relaunch dengan identitas baru sampai 3 kali. Kalau terus terjadi: nyalakan/matikan proxy di prompt awal, atau ganti `PROXY_COUNTRY` |
+| `We detected unusual activity` | Sama seperti di atas — IP + fingerprint sudah ditandai. Tanpa proxy, relaunch tidak mengganti IP |
+| `Please enable JS and disable any ad blocker` | Challenge Cloudflare (situs target, bukan GitHub). Pastikan `PROXY_HOST` masih port `823` dan `PROXY_USER` tidak diubah manual — script menyusun `sessid` sendiri. Kalau paket proxy-mu tidak mendukung `sessid`, pakai port sticky `gw.dataimpulse.com:10000` |
+| `⚠️ [warmup] timeout` | Sudah diperbaiki lewat `humanize=0.3`; kalau masih muncul, mesinnya sedang berat — naikkan `WARMUP_TIMEOUT` di `config.py`. Warmup tidak wajib sukses |
 | OTP tidak masuk | `worker`: cek `MAIL_WORKER_PASSWORD` cocok dengan `APP_PASSWORD` di Worker — errornya membedakan password salah (401) dari secret yang belum di-set (503). `mailtm`: hanya lambat karena rate limit, 429 di-retry sendiri |
 | `Login 9router 200 tapi cookie auth_token tidak dikirim` | Biasanya `NINEROUTER_URL` salah port — dashboard ada di `20127` |
 | `Node id <situs> tidak ada di 9router` | Provider node dihapus atau dibuat ulang dengan id berbeda. Ambil id barunya dari URL halaman provider, perbarui `provider_node_id` di `config.py` |
 | Browser tidak muncul di Linux | Set `DISPLAY=:0` di `.env`, atau pilih mode `2` (virtual display) saat run |
 | `Please install Xvfb to use headless mode` | Mode virtual dipilih tapi Xvfb belum ada: `sudo apt install xvfb` |
 | API key tetap tidak terbaca | Mode semi: tempel sendiri di prompt terakhir. Kalau situsnya mengubah prefix dari `sk-`, lebarkan `API_KEY_PATTERN` di [bansos/selectors.py](bansos/selectors.py) — jangan turunkan `API_KEY_MIN_LENGTH`, itu yang menahan key terpotong ikut terbaca |
+| Key tersimpan masih ada `****` | Seharusnya tidak bisa terjadi — nilai bertopeng ditolak. Kalau situsnya memakai karakter topeng baru, tambahkan ke `KEY_TRUNCATION_MARKS` di [bansos/selectors.py](bansos/selectors.py) |
 | Satu langkah selalu mentok padahal dulu lancar | Selector berubah. Semuanya ada di [bansos/selectors.py](bansos/selectors.py) |
 | Banyak akun `❌` tanpa alasan jelas | Kemungkinan jalan di mode auto: langkah yang mentok di-skip tanpa penjelasan panjang. Ulangi satu akun di mode semi untuk melihat langkah mana yang berhenti |
 
@@ -700,13 +823,15 @@ satu nama yang kebetulan sama akan menghapus key yang sudah tersimpan.
 python -m bansos.selfcheck
 ```
 
-Assert biasa, tanpa framework. Yang diperiksa: syntax username proxy, geometri
-jendela + pref clipboard, mapping mode browser, ekstraksi API key (utuh diterima,
-terpotong ditolak), penolakan key duplikat antar situs, urutan eskalasi (dua hard
-refresh dulu, baru user), mode auto (skip tanpa prompt, jatah refresh tetap penuh),
-ekstraksi kode OTP untuk kedua bentuk payload, client mail.tm/worker/9router lewat
-`httpx.MockTransport`, format `akun.txt` (header run + baris berlabel situs), dan
-label tujuan simpan `RunOptions`.
+Assert biasa, tanpa framework. Yang diperiksa: syntax username proxy, override
+proxy per run, geometri jendela + pref clipboard, mapping mode browser, ekstraksi
+API key (utuh diterima, terpotong ditolak), penolakan nilai bertopeng
+(`****`/bullet/ellipsis dengan panjang topeng bervariasi), penolakan key duplikat
+antar situs, urutan eskalasi (dua hard refresh dulu, baru user), mode auto (skip
+tanpa prompt, jatah refresh tetap penuh), ekstraksi kode OTP untuk kedua bentuk
+payload, client mail.tm/worker/9router lewat `httpx.MockTransport`, format
+`akun.txt` (header run + baris berlabel situs), dan label tujuan simpan
+`RunOptions`.
 
 Alur browser sungguhan tidak ikut — lihat
 [Yang tidak bisa dites otomatis](#yang-tidak-bisa-dites-otomatis).

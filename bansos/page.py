@@ -24,6 +24,7 @@ from .errors import BotBlocked, StepSkipped
 from .human import guard, human_delay
 from .prompt import MANUAL, ask, ask_retry, is_auto
 from .selectors import (
+    BOT_BLOCK_SELECTORS,
     BOT_BLOCK_TEXTS,
     CLOUDFLARE_CHALLENGE,
     CLOUDFLARE_TEXTS,
@@ -32,15 +33,19 @@ from .selectors import (
 
 # ═══ Pencarian elemen ═════════════════════════════════════════════════════════
 
+def _frames(page) -> list:
+    """Main frame + semua iframe. Captcha dan halaman blokir hidup di iframe."""
+    try:
+        return [page, *page.frames[1:]]
+    except Exception:
+        return [page]
+
+
 async def find_visible(page, selectors: list[str], budget: float = FIND_BUDGET):
     """Selector pertama yang visible, dicari di main frame lalu semua iframe."""
     deadline = time.monotonic() + budget
-    try:
-        frames = [page, *page.frames[1:]]
-    except Exception:
-        frames = [page]
 
-    for frame in frames:
+    for frame in _frames(page):
         for selector in selectors:
             if time.monotonic() > deadline:
                 return None
@@ -203,11 +208,20 @@ async def nudge_field(page, selectors: list[str], value: str, label: str = "") -
 # ═══ Teks & URL ═══════════════════════════════════════════════════════════════
 
 async def has_text(page, text: str) -> bool:
-    try:
-        return await page.locator(f"text={text}").count() > 0
-    except Exception:
-        return False
+    """Cari teks di main frame maupun semua iframe.
 
+    Halaman blokir dan captcha dirender di iframe pihak ketiga (DataDome,
+    octocaptcha). `page.locator()` hanya melihat main frame, jadi memeriksa main
+    frame saja membuat halaman blokir terlewat dan script lanjut menabrak selector
+    yang tidak akan pernah ada.
+    """
+    for frame in _frames(page):
+        try:
+            if await guard(frame.locator(f"text={text}").count(), LOCATOR_CALL_TIMEOUT):
+                return True
+        except Exception:
+            continue
+    return False
 
 async def has_any_text(page, texts: list[str]) -> bool:
     for text in texts:
@@ -215,6 +229,20 @@ async def has_any_text(page, texts: list[str]) -> bool:
             return True
     return False
 
+async def has_selector(page, selectors: list[str]) -> bool:
+    """Ada di DOM, tidak harus visible — untuk mendeteksi halaman penghalang.
+
+    `find_visible` tidak cukup di sini: iframe blokir kadang belum dianggap
+    visible saat diperiksa, padahal keberadaannya sudah cukup jadi bukti.
+    """
+    for frame in _frames(page):
+        for selector in selectors:
+            try:
+                if await guard(frame.locator(selector).count(), LOCATOR_CALL_TIMEOUT):
+                    return True
+            except Exception:
+                continue
+    return False
 
 async def wait_for_url_contains(page, *fragments: str, timeout: float = 30.0) -> bool:
     """Tunggu URL memuat salah satu fragment. True kalau sudah/berhasil sampai."""
@@ -241,16 +269,24 @@ async def settle(page, timeout: float = SETTLE_TIMEOUT) -> None:
     await asyncio.sleep(human_delay(0.8, 1.8))
 
 
-async def goto(page, url: str, timeout: float = NAV_TIMEOUT) -> bool:
+async def goto(page, url: str, timeout: float = NAV_TIMEOUT, referer: str = "") -> bool:
     """Navigasi dengan batas waktu tegas, lalu tunggu DOM + jaringan menenang.
 
     `wait_until="networkidle"` sengaja tidak dipakai sebagai kondisi goto:
     GitHub menjaga koneksi analytics/live-update terbuka, jadi tidak pernah idle
     dan goto menggantung sampai timeout.
+
+    `referer` diteruskan ke Playwright karena beberapa halaman (mis. /signup)
+    memperlakukan navigasi tanpa referer sebagai pola bot.
     """
     print(f"→ goto {url}")
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
+        await page.goto(
+            url,
+            wait_until="domcontentloaded",
+            timeout=timeout * 1000,
+            **({"referer": referer} if referer else {}),
+        )
     except Exception as exc:
         print(f"⚠️  goto {url} gagal/timeout: {exc}")
         return False
@@ -399,16 +435,28 @@ async def wait_out_cloudflare(page, timeout: float = CF_CHALLENGE_TIMEOUT) -> bo
 async def pass_cloudflare(page, timeout: float = CF_CHALLENGE_TIMEOUT) -> bool:
     """Tunggu challenge lolos → muat ulang (maks 2x) → baru serahkan ke user.
 
+    Halaman blokir anti-bot dilewati tanpa menunggu: itu keputusan final di sisi
+    server, bukan challenge yang selesai sendiri. Menunggu 60s lalu memuat ulang
+    dua kali di sana hanya membuang tiga menit per akun. `raise_if_bot_blocked` di
+    pemanggilnya yang mengubahnya jadi relaunch dengan identitas baru.
+
     Reload memakai `_reload_once`, bukan `reload`/`hard_reload`: keduanya
     memanggil fungsi ini lagi di akhir dan challenge yang belum lolos akan
     membuat rekursi tanpa dasar.
     """
+    if await bot_blocked(page):
+        print("⚠️  Halaman blokir anti-bot, bukan challenge — tidak ditunggu")
+        return False
+
     if await wait_out_cloudflare(page, timeout):
         return True
 
     for attempt in range(1, HARD_REFRESH_ATTEMPTS + 1):
         print(f"↻ Challenge Cloudflare belum lolos — muat ulang {attempt}/{HARD_REFRESH_ATTEMPTS}...")
         await _reload_once(page, NAV_TIMEOUT, no_cache=True)
+        if await bot_blocked(page):
+            print("⚠️  Berubah jadi halaman blokir anti-bot — berhenti menunggu")
+            return False
         if await wait_out_cloudflare(page, timeout):
             return True
 
@@ -427,7 +475,13 @@ async def pass_cloudflare(page, timeout: float = CF_CHALLENGE_TIMEOUT) -> bool:
 
 
 async def bot_blocked(page) -> bool:
-    """'We detected unusual activity' — retry selector tidak akan menolong."""
+    """Halaman blokir DataDome/anti-bot. Retry selector tidak akan menolong.
+
+    Selector diperiksa lebih dulu: iframe `captcha-delivery.com` adalah bukti yang
+    tidak bergantung pada bahasa maupun teks yang bisa berubah.
+    """
+    if await has_selector(page, BOT_BLOCK_SELECTORS):
+        return True
     return await has_any_text(page, BOT_BLOCK_TEXTS)
 
 
@@ -435,7 +489,7 @@ async def raise_if_bot_blocked(page) -> None:
     if not await bot_blocked(page):
         return
     print("\n" + "=" * 60)
-    print("🚫 GitHub blokir: 'We detected unusual activity'")
+    print("🚫 Blokir anti-bot: 'We detected unusual activity'")
     print("   IP + fingerprint sudah ditandai → relaunch dengan identitas baru")
     print("=" * 60)
     raise BotBlocked()

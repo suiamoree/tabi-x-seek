@@ -25,9 +25,18 @@ SETTLE_TIMEOUT = 6.0
 # Playwright di Firefox kadang tidak pernah menyelesaikan mouse.move/wheel dan
 # is_visible() saat halaman masih sibuk. Tidak ada error yang dilempar, jadi
 # try/except tidak menolong — hanya timeout eksplisit.
-WARMUP_TIMEOUT = 8.0
+#
+# 12s, bukan 8s: `humanize` Camoufox menghaluskan tiap mouse.move di level browser
+# dan satu panggilan berbiaya ~0.2-0.8s, jadi warmup 3 gerakan + scroll butuh
+# ruang lebih dari sekadar batas jaringan.
+WARMUP_TIMEOUT = 12.0
 LOCATOR_CALL_TIMEOUT = 3.0
 FIND_BUDGET = 8.0
+
+# Jumlah titik yang dikirim saat drag slider captcha. Sengaja kecil: Camoufox
+# sudah menginterpolasi tiap gerakan, dan tiap panggilan mouse.move berbiaya
+# ~0.2-0.8s — 50 langkah berarti drag setengah menit dan captcha kedaluwarsa.
+DRAG_STEPS_MIN, DRAG_STEPS_MAX = 6, 10
 
 # Challenge Cloudflare biasanya selesai sendiri di Camoufox selama IP stabil.
 CF_CHALLENGE_TIMEOUT = 60.0
@@ -80,6 +89,7 @@ class RunOptions:
     browser_mode: bool | str = False
     save_file: bool = True
     push_router: bool = True
+    use_proxy: bool = False
     seen_keys: set[str] = field(default_factory=set)
 
     @property

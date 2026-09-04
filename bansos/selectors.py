@@ -7,6 +7,11 @@ from __future__ import annotations
 
 import re
 
+GITHUB_HOME = "https://github.com/"
+
+# Deep-link ke /signup ditolak DataDome (HTTP 403 + iframe captcha-delivery.com),
+# jadi URL ini hanya dipakai sebagai penanda, bukan tujuan `goto`. Jalan masuknya
+# lewat klik link Sign up dari homepage — lihat `github.open_signup`.
 GITHUB_SIGNUP_URL = "https://github.com/signup"
 
 GITHUB_SIGNUP = {
@@ -65,15 +70,26 @@ SITE = {
 # Bentuk API key yang dikeluarkan situs target: `sk-` + 48 karakter alnum.
 # Dipakai untuk membaca key langsung dari DOM, jadi tombol Copy + izin clipboard
 # bukan satu-satunya jalan.
+#
+# Kedua lookaround memaksa match menjadi run alnum yang utuh: tanpa itu, regex
+# bisa mundur (backtrack) dan mengembalikan potongan depan dari nilai yang
+# sebetulnya bertopeng, mis. `sk-<45 char>****<sisanya>`.
 # ponytail: dipatok prefix `sk-` karena kedua situs memakainya. Situs baru dengan
 # prefix lain → lebarkan pola ini, bukan menurunkan API_KEY_MIN_LENGTH.
-API_KEY_PATTERN = re.compile(r"sk-[A-Za-z0-9_-]{20,}")
+API_KEY_PATTERN = re.compile(r"(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])")
 
 # Panjang minimum agar sebuah kandidat dianggap key utuh. Daftar key menampilkan
-# versi terpotong (`sk-IEyzjbnS4GP...`) yang juga cocok dengan pola di atas; key
+# versi terpotong (`sk-AbCd1234EfG...`) yang juga cocok dengan pola di atas; key
 # sungguhan 51 karakter sedangkan potongannya ~10-15, jadi 40 memisahkan keduanya
 # dengan jarak aman.
 API_KEY_MIN_LENGTH = 40
+
+# Penanda bahwa nilai yang terbaca cuma tampilan, bukan key sungguhan. UI
+# menyembunyikan sebagian key dengan bullet/asterisk (`sk-abc••••••xyz`) atau
+# memotongnya dengan ellipsis, dan jumlah karakter topengnya tidak tetap. Yang
+# diperiksa adalah tetangga langsung match, bukan isinya: karakter ini bukan alnum
+# jadi tidak pernah ikut ke dalam match itu sendiri.
+KEY_TRUNCATION_MARKS = ("*", "•", "●", "·", "∙", "×", "✱", "…", "...", "___")
 
 # Slider captcha GitHub (octocaptcha) — container = track, handle = yang di-drag.
 SLIDER = {
@@ -103,11 +119,20 @@ CLOUDFLARE_TEXTS = [
     "Just a moment",
 ]
 
-# Halaman blokir anti-bot GitHub; tidak bisa dilewati dengan retry, harus ganti
-# IP/fingerprint. Dideteksi supaya tidak terus menabrak selector.
+# Halaman blokir anti-bot; tidak bisa dilewati dengan menunggu, harus ganti
+# IP/fingerprint. GitHub memakai DataDome untuk ini, dan halaman blokirnya
+# dirender di dalam iframe geo.captcha-delivery.com — jadi selectornya diperiksa
+# di semua frame, bukan hanya main frame.
+BOT_BLOCK_SELECTORS = [
+    "iframe[src*='captcha-delivery.com']",
+    "#captcha__element",
+    ".captcha__human",
+]
 BOT_BLOCK_TEXTS = [
     "We detected unusual activity",
     "unusual activity from your device or network",
+    "Verification Required",
+    "Slide right to secure your access",
 ]
 
 # GitHub menolak sebagian domain temp-mail. Errornya muncul di validasi field,

@@ -124,7 +124,13 @@ def _launch_kwargs(proxy: dict | None, headless: bool | str) -> dict:
         "block_webrtc": True,
         # humanize=True: Camoufox menginterpolasi tiap gerakan kursor di level
         # browser, jadi tidak ada lompatan pointer instan ("rapid clicks").
-        "humanize": True,
+        #
+        # Angka, bukan True: nilainya adalah durasi maksimum per gerakan, dan
+        # default `True` berarti sampai 1.5s. Karena interpolasinya per panggilan
+        # `mouse.move`, tiap gerakan kita berbiaya segitu — warmup jadi 30s+ dan
+        # selalu kena timeout, drag captcha jadi setengah menit dan kedaluwarsa.
+        # 0.3s masih di rentang gerakan tangan manusia untuk jarak sependek ini.
+        "humanize": 0.3,
         # Layar 1366x768 adalah resolusi laptop Windows; kalau OS-nya diacak ke
         # macOS, kombinasinya justru jadi tidak wajar.
         "os": "windows",

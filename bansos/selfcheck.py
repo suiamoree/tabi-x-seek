@@ -7,6 +7,7 @@ tidak bisa dites otomatis — itu diverifikasi manual dengan satu akun.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import tempfile
 from pathlib import Path
@@ -143,7 +144,7 @@ def check_browser_modes() -> None:
     assert False in offered and True in offered
 
 def check_key_extraction() -> None:
-    """Key utuh diambil, tampilan terpotong ditolak."""
+    """Key utuh diambil; versi terpotong dan bertopeng ditolak."""
     full = "sk-" + "AbCd1234EfGh5678IjKl9012MnOp3456QrSt7890UvWx"
     assert len(full) == 47, len(full)
 
@@ -155,6 +156,34 @@ def check_key_extraction() -> None:
     assert pick_key(["sk-AbCd1234EfG...", full]) == full
     assert pick_key([]) is None
     assert pick_key([None, 123]) is None  # type: ignore[list-item]
+
+
+def check_masked_key_rejected() -> None:
+    """Nilai bertopeng dari DOM tidak boleh lolos hanya karena panjangnya cukup.
+
+    UI menyembunyikan tengah key dengan bullet/asterisk dan jumlah karakter
+    topengnya berubah-ubah, jadi yang diperiksa adalah tetangga langsung match,
+    bukan panjang topengnya.
+    """
+    head = "sk-" + "A" * 44          # cukup panjang untuk lolos ambang
+    tail = "B" * 44
+    real = "sk-" + "C" * 48
+
+    for mask in ("*", "****", "*" * 12, "•", "••••••", "●●●", "…", "..."):
+        masked = f"{head}{mask}{tail}"
+        assert pick_key([masked]) is None, (mask, pick_key([masked]))
+
+    # Topeng di depan juga potongan tampilan, bukan key.
+    assert pick_key([f"****{head}"]) is None
+    assert pick_key([f"{head}…"]) is None
+
+    # Key sungguhan di halaman yang sama tetap terambil walau ada baris bertopeng.
+    page_text = f"Existing: {head}********{tail}\nNew key: {real}\n"
+    assert pick_key([page_text]) == real
+
+    # Pemisah biasa bukan topeng: key di dalam JSON/kutip harus tetap terbaca.
+    assert pick_key([f'{{"apiKey":"{real}"}}']) == real
+    assert pick_key([f"key = {real};"]) == real
 
 
 def check_key_uniqueness() -> None:
@@ -385,10 +414,29 @@ def check_run_options() -> None:
     assert RunOptions(save_file=False).targets == "9router"
     assert RunOptions(save_file=False, push_router=False).targets == "tidak disimpan"
 
+    # Proxy dipilih per run; defaultnya tidak dipakai kalau tidak diminta.
+    assert RunOptions().use_proxy is False
+    assert RunOptions(use_proxy=True).use_proxy is True
+
     # seen_keys tidak boleh dibagi antar instance — itu state per run.
     first, second = RunOptions(), RunOptions()
     first.seen_keys.add("sk-x")
     assert second.seen_keys == set()
+
+
+def check_proxy_override() -> None:
+    """Pilihan proxy di CLI diterapkan lewat salinan Settings, bukan global.
+
+    `build_proxy` membaca `proxy_enabled`, jadi mematikan proxy untuk satu run
+    cukup dengan mengganti field itu — tidak ada jalur lain yang perlu tahu.
+    """
+    enabled = _config(proxy_enabled=True)
+    assert build_proxy(enabled, "acc1") is not None
+
+    disabled = dataclasses.replace(enabled, proxy_enabled=False)
+    assert build_proxy(disabled, "acc1") is None
+    # Settings aslinya tidak ikut berubah.
+    assert build_proxy(enabled, "acc1") is not None
 
 
 # ═══ Client HTTP (tanpa jaringan nyata) ═══════════════════════════════════════
@@ -531,6 +579,7 @@ async def main() -> None:
     check_browser_geometry()
     check_browser_modes()
     check_key_extraction()
+    check_masked_key_rejected()
     check_key_uniqueness()
     await check_retry_escalation()
     await check_auto_mode_skips()
@@ -538,6 +587,7 @@ async def main() -> None:
     check_username()
     check_storage()
     check_run_options()
+    check_proxy_override()
     await check_mailtm_client()
     await check_worker_client()
     await check_worker_auth_errors()

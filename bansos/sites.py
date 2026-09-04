@@ -6,6 +6,7 @@ Identik untuk semua entry di `config.Settings.sites`.
 from __future__ import annotations
 
 import asyncio
+import re
 
 from .config import CONSENT_DELAY, DOM_READ_ATTEMPTS, OAUTH_ATTEMPTS, Site
 from .human import human_delay
@@ -19,7 +20,13 @@ from .page import (
     wait_for_url_contains,
 )
 from .prompt import MANUAL, ask, is_auto
-from .selectors import API_KEY_MIN_LENGTH, API_KEY_PATTERN, OAUTH_FAILED_TEXT, SITE
+from .selectors import (
+    API_KEY_MIN_LENGTH,
+    API_KEY_PATTERN,
+    KEY_TRUNCATION_MARKS,
+    OAUTH_FAILED_TEXT,
+    SITE,
+)
 
 
 async def _accept_consent(page) -> bool:
@@ -194,19 +201,42 @@ _READ_PASTE_JS = """() => {
 
 
 def pick_key(candidates: list[str]) -> str | None:
-    """Kandidat terpanjang yang cocok pola key dan cukup panjang.
+    """Kandidat terpanjang yang cocok pola key, cukup panjang, dan tidak bertopeng.
 
-    Halaman daftar key menampilkan versi terpotong dari key yang sudah ada, jadi
-    kandidat pendek dibuang: yang dicari adalah key utuh yang baru dibuat.
+    Tiga hal yang membuat sebuah nilai ditolak:
+
+    - **Terlalu pendek.** Halaman daftar key menampilkan versi terpotong
+      (`sk-AbCd1234EfG...`) yang tetap cocok polanya.
+    - **Bertopeng.** UI menyembunyikan tengah key dengan bullet atau asterisk
+      (`sk-abc••••••••xyz`, `sk-abc********xyz`) dan jumlah karakter topengnya
+      tidak tetap. Yang diperiksa adalah karakter tepat sebelum dan sesudah
+      match — karakter topeng bukan alnum, jadi tidak pernah masuk ke match
+      itu sendiri, dan panjang topengnya jadi tidak perlu diketahui.
+    - **Diapit ellipsis.** `sk-abc...` dan `...xyz` sama-sama potongan tampilan.
+
+    Ini yang membuat pembacaan lewat DOM aman dipakai sebagai jalur utama: nilai
+    bertopeng tidak akan lolos hanya karena panjangnya cukup.
     """
     best = None
     for text in candidates:
         if not isinstance(text, str):
             continue
-        for match in API_KEY_PATTERN.findall(text):
-            if len(match) >= API_KEY_MIN_LENGTH and (best is None or len(match) > len(best)):
-                best = match
+        for match in API_KEY_PATTERN.finditer(text):
+            value = match.group(0)
+            if len(value) < API_KEY_MIN_LENGTH or _is_truncated(text, match):
+                continue
+            if best is None or len(value) > len(best):
+                best = value
     return best
+
+
+def _is_truncated(text: str, match: re.Match[str]) -> bool:
+    """True kalau match diapit penanda topeng/potongan."""
+    before = text[max(0, match.start() - 3) : match.start()]
+    after = text[match.end() : match.end() + 3]
+    return any(
+        mark in before or mark in after for mark in KEY_TRUNCATION_MARKS
+    )
 
 
 def accept_key(key: str | None, seen: set[str], source: str = "") -> str | None:
