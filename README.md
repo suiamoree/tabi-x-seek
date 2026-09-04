@@ -97,12 +97,13 @@ Butuh Python 3.10 atau lebih baru.
 | Cara | Perintah |
 | --- | --- |
 | Windows | dobel-klik **`run.bat`** |
-| Linux / macOS | `chmod +x run.sh` sekali, lalu **`./run.sh`** |
+| Linux / macOS | **`./run.sh`** |
 | Manual | `python bansos.py` |
 
 Launcher-nya mencari Python di PATH, membuat `.env` dari `.env.example` kalau
 belum ada, lalu menjalankan script. `run.bat` menahan jendela terbuka di akhir
-supaya pesan errornya terbaca kalau dijalankan dari Explorer.
+supaya pesan errornya terbaca kalau dijalankan dari Explorer. `run.sh` sudah
+executable di repo; kalau kloningnya kehilangan bit itu, `chmod +x run.sh` sekali.
 
 ```powershell
 cd F:\Coding\python\tabi-x-seek
@@ -569,13 +570,14 @@ Bootstrap harus selesai sebelum modul lain di-import, karena modul lain memakai
 bansos.py              entry point
 run.bat / run.sh       launcher: cek Python, siapkan .env, jalankan
 bansos/
+  __init__.py          penanda paket — tanpa ini bansos.py mengimpor dirinya
   bootstrap.py         cek dependency, download browser, siapkan file
   config.py            Settings dari .env, RunOptions, semua konstanta timeout
   selectors.py         semua selector CSS + pola API key, satu tempat
   errors.py            BotBlocked, EmailRejected, StepSkipped
 
   browser.py           launch Camoufox, mode tampilan, geometri jendela, proxy
-  human.py             delay acak, kurva mouse, drag slider, warmup
+  human.py             delay acak, drag slider, warmup
   page.py              cari elemen, klik, isi, navigasi, hard refresh, eskalasi
   captcha.py           slider captcha GitHub
   prompt.py            prompt ke user + saklar mode jalan (semi/auto)
@@ -583,6 +585,7 @@ bansos/
   github.py            signup, captcha, OTP, login
   sites.py             consent, OAuth, buat API key, ambil + validasi nilai key
   mail/
+    __init__.py        make_mail: pilih penyedia dari config
     base.py            kontrak MailProvider + logika bersama
     worker.py          inbox pribadi
     mailtm.py          mail.tm
@@ -592,6 +595,12 @@ bansos/
   cli.py               tanya opsi run, jalankan, ringkas hasil
   selfcheck.py         tes tanpa framework
 ```
+
+Nama file entry point sengaja sama dengan nama paketnya (`bansos.py` vs
+`bansos/`), dan itu hanya jalan karena `bansos/__init__.py` ada — Python memilih
+paket di atas modul bernama sama. Kalau file itu hilang, `from bansos import
+bootstrap` di `bansos.py` mengimpor file itu sendiri dan gagal dengan
+`partially initialized module`.
 
 Pemisahannya: `page.py` tidak tahu apa-apa soal GitHub, `github.py` tidak tahu
 apa-apa soal 9router, dan `storage.py` satu-satunya yang menyentuh file hasil.
@@ -859,6 +868,7 @@ satu nama yang kebetulan sama akan menghapus key yang sudah tersimpan.
 | OTP tidak masuk | `worker`: cek `MAIL_WORKER_PASSWORD` cocok dengan `APP_PASSWORD` di Worker — errornya membedakan password salah (401) dari secret yang belum di-set (503). `mailtm`: hanya lambat karena rate limit, 429 di-retry sendiri |
 | `Login 9router 200 tapi cookie auth_token tidak dikirim` | Biasanya `NINEROUTER_URL` salah port — dashboard ada di `20127` |
 | `Node id <situs> tidak ada di 9router` | Provider node dihapus atau dibuat ulang dengan id berbeda. Ambil id barunya dari URL halaman provider, perbarui `provider_node_id` di `config.py` |
+| `cannot import name 'bootstrap' from partially initialized module 'bansos'` | `bansos/__init__.py` hilang, jadi `bansos.py` di root menang atas direktori paketnya dan mengimpor dirinya sendiri. Pastikan `bansos/__init__.py` dan `bansos/mail/__init__.py` ada — `git pull` kalau kloningnya lama |
 | Browser tidak muncul di Linux | Set `DISPLAY=:0` di `.env`, atau pilih mode `2` (virtual display) saat run |
 | `Please install Xvfb to use headless mode` | Mode virtual dipilih tapi Xvfb belum ada: `sudo apt install xvfb` |
 | `Locator.click: Timeout 15000ms exceeded` | Tombolnya benar-benar tidak bisa diklik, bukan cuma lambat. Sudah otomatis dicoba force click, diulang, dan di-hard-refresh 2x. Kalau di satu situs selalu begini, kemungkinan selectornya menunjuk elemen yang salah — cek `SITE` di [bansos/selectors.py](bansos/selectors.py) |

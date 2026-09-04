@@ -2,8 +2,12 @@
 .env
 akun.txt
 
-# Script probe/scratch lokal.
-_*.py
+# Script probe/scratch lokal, selalu di root.
+#
+# Pola diikat ke root dengan '/' di depan. Tanpa itu, gitignore mencocokkan pola
+# ke nama file di semua level, dan `_*.py` ikut menelan `__init__.py` di dalam
+# paket — paketnya jadi tidak ter-commit dan `import bansos` gagal di mesin lain.
+/_*.py
 
 # Konfigurasi editor/agent lokal, bukan bagian dari project.
 .cursor/
