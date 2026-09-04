@@ -1,0 +1,9 @@
+# Script Python dan file teks disimpan LF di repo supaya diff-nya bersih walau
+# dikerjakan dari Windows.
+* text=auto eol=lf
+
+# Launcher Windows harus CRLF: cmd.exe salah membaca baris berakhiran LF pada
+# blok if/for bertingkat.
+*.bat text eol=crlf
+
+*.png binary

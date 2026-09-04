@@ -1,0 +1,16 @@
+# Kredensial mentah — jangan pernah di-commit.
+.env
+akun.txt
+
+# Script probe/scratch lokal.
+_*.py
+
+# Konfigurasi editor/agent lokal, bukan bagian dari project.
+.cursor/
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.idea/
+.vscode/
