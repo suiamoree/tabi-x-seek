@@ -6,6 +6,7 @@ import asyncio
 import time
 
 from .captcha import handle_slider
+from .config import POST_LOGIN_DELAY_MAX, POST_LOGIN_DELAY_MIN
 from .errors import EmailRejected
 from .human import human_delay, warmup
 from .mail import MailProvider
@@ -298,10 +299,18 @@ async def submit_otp(page, mail: MailProvider, address: str, sent_after: float) 
     return True
 
 
+async def on_login_page(page) -> bool:
+    """Halaman ini meminta login?
+
+    Dipakai juga di tengah alur OAuth: GitHub kadang meminta login lagi walau
+    sesi sebelumnya sudah masuk, jadi pemeriksaannya tidak cukup sekali di awal.
+    """
+    return await find_visible(page, GITHUB_LOGIN["login_input"], budget=4.0) is not None
+
 async def _do_login(page, username: str, password: str) -> bool:
     """Login kalau form-nya ada. Form yang hilang = sudah masuk, itu juga sukses."""
     await settle(page)
-    if await find_visible(page, GITHUB_LOGIN["login_input"], budget=4.0) is None:
+    if not await on_login_page(page):
         print("✓ Sudah login (form login tidak ada)")
         return True
 
@@ -321,13 +330,22 @@ async def _do_login(page, username: str, password: str) -> bool:
 
     await asyncio.sleep(3)
     # Form login yang masih terpampang = kredensial belum diterima.
-    return await find_visible(page, GITHUB_LOGIN["login_input"], budget=4.0) is None
-
+    return not await on_login_page(page)
 
 async def login(page, username: str, password: str) -> bool:
+    """Login lalu beri jeda sebelum langkah berikutnya.
+
+    Jedanya bukan hiasan: sesi yang baru dibuat butuh waktu sampai cookie-nya
+    diakui konsisten di semua endpoint GitHub. Tanpa jeda, halaman OAuth
+    berikutnya kadang masih melihat keadaan belum login dan menampilkan form
+    login lagi di tengah alur.
+    """
     if not await retry_after_refresh(
         page, "login GitHub", lambda: _do_login(page, username, password)
     ):
         return False
-    print("✓ Logged in")
+
+    delay = human_delay(POST_LOGIN_DELAY_MIN, POST_LOGIN_DELAY_MAX)
+    print(f"✓ Logged in — jeda {delay:.1f}s supaya sesi mantap...")
+    await asyncio.sleep(delay)
     return True

@@ -6,7 +6,7 @@ import asyncio
 import time
 
 from . import browser, github, sites, storage
-from .config import RunOptions, Settings, Site
+from .config import GithubAccount, RunOptions, Settings, Site
 from .errors import BotBlocked, EmailRejected, StepSkipped
 from .human import human_delay
 from .mail import MailProvider
@@ -67,9 +67,10 @@ async def process_account(
             return False
 
         collected: list[tuple[Site, str]] = []
+        account = GithubAccount(username=username, password=password)
         for site in config.sites:
             try:
-                key = await sites.collect_key(page, site, username, options.seen_keys)
+                key = await sites.collect_key(page, site, account, options.seen_keys)
             except StepSkipped as exc:
                 print(f"⚠️  {site.name} dilewati pada langkah: {exc}")
                 key = None

@@ -59,6 +59,12 @@ DOM_READ_ATTEMPTS = 3
 OTP_TIMEOUT = 180.0
 OTP_POLL_INTERVAL = 5.0
 
+# Jeda setelah login GitHub, sebelum langkah berikutnya. Sesi yang baru dibuat
+# butuh waktu sampai cookie-nya dipakai konsisten di seluruh alur; melanjutkan
+# seketika membuat halaman OAuth berikutnya kadang masih melihat keadaan belum
+# login dan menampilkan form login lagi.
+POST_LOGIN_DELAY_MIN, POST_LOGIN_DELAY_MAX = 4.0, 6.0
+
 HTTP_TIMEOUT = 20.0
 
 
@@ -75,6 +81,19 @@ class Site:
     @property
     def keys_url(self) -> str:
         return f"https://{self.host}/keys"
+
+
+@dataclass(frozen=True)
+class GithubAccount:
+    """Kredensial satu akun GitHub yang baru dibuat.
+
+    Dibawa sampai ke alur per-situs karena dua hal di sana membutuhkannya: nama
+    API key memakai username-nya, dan GitHub bisa meminta login lagi di tengah
+    OAuth sehingga passwordnya harus tersedia di titik itu.
+    """
+
+    username: str
+    password: str
 
 
 @dataclass

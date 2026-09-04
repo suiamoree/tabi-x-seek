@@ -8,7 +8,8 @@ from __future__ import annotations
 import asyncio
 import re
 
-from .config import CONSENT_DELAY, DOM_READ_ATTEMPTS, OAUTH_ATTEMPTS, Site
+from . import github
+from .config import CONSENT_DELAY, DOM_READ_ATTEMPTS, OAUTH_ATTEMPTS, GithubAccount, Site
 from .human import human_delay
 from .page import (
     click_first_visible,
@@ -17,6 +18,7 @@ from .page import (
     goto,
     has_text,
     retry_after_refresh,
+    settle,
     wait_for_url_contains,
 )
 from .prompt import MANUAL, ask, is_auto
@@ -79,6 +81,27 @@ async def _click_continue(page, site: Site) -> bool:
     return False
 
 
+async def _login_if_asked(page, account: GithubAccount) -> bool:
+    """Login lagi kalau GitHub memintanya di tengah OAuth.
+
+    Terjadi walau login sudah berhasil sebelumnya: cookie sesi tidak selalu
+    langsung diakui di endpoint OAuth, jadi `/login/oauth/authorize` bisa
+    menampilkan form login lagi. Tanpa penanganan ini alurnya berhenti di situ —
+    tombol Authorize tidak akan pernah ada.
+
+    Return False hanya kalau login-nya sendiri gagal; halaman yang tidak meminta
+    login bukan kegagalan.
+    """
+    if not await github.on_login_page(page):
+        return True
+
+    print("⚠️  GitHub minta login lagi di tengah OAuth — login dulu...")
+    if not await github.login(page, account.username, account.password):
+        return False
+    await settle(page)
+    return True
+
+
 async def _authorize_app(page) -> bool:
     """Klik Authorize hanya kalau memang di halaman consent OAuth."""
     if "login/oauth/authorize" not in page.url.lower():
@@ -99,8 +122,8 @@ async def _wait_dashboard(page, site: Site, timeout: float = 30.0) -> bool:
     )
 
 
-async def _oauth_flow(page, site: Site) -> bool:
-    """consent → Continue with GitHub → Authorize → mendarat di dashboard.
+async def _oauth_flow(page, site: Site, account: GithubAccount) -> bool:
+    """consent → Continue with GitHub → (login lagi kalau diminta) → Authorize → dashboard.
 
     Satu kesatuan supaya bisa diulang utuh setelah hard refresh: refresh
     mengosongkan checkbox consent dan bisa mengembalikan halaman ke sign-up, jadi
@@ -111,9 +134,23 @@ async def _oauth_flow(page, site: Site) -> bool:
     if await _wait_dashboard(page, site, timeout=1.0):
         return True
 
+    # Percobaan ulang bisa dimulai dari halaman mana saja — termasuk dari dashboard
+    # GitHub, kalau rantai OAuth-nya putus setelah login ulang. Balik ke halaman
+    # situs dulu, karena tombol Continue with GitHub hanya ada di sana.
+    if site.host not in page.url:
+        print(f"→ Bukan di {site.host} lagi, buka ulang halaman situs...")
+        await goto(page, site.signup_url)
+
     await _accept_consent(page)
     if not await _click_continue(page, site):
         return False
+
+    # Setelah mendarat di GitHub, sesi bisa terbaca belum login walau login
+    # sebelumnya berhasil. Ditangani sebelum mencari tombol Authorize, karena di
+    # halaman login tombol itu tidak ada.
+    if not await _login_if_asked(page, account):
+        return False
+
     await _authorize_app(page)
 
     # Landing di dashboard = bukti OAuth sukses, jadi ditunggu; bukan goto.
@@ -385,7 +422,9 @@ async def _ask_key_manually(page, site: Site, seen: set[str]) -> str | None:
         return None
     return typed
 
-async def collect_key(page, site: Site, key_name: str, seen: set[str]) -> str | None:
+async def collect_key(
+    page, site: Site, account: GithubAccount, seen: set[str]
+) -> str | None:
     """Sign-up via GitHub → buat API key → ambil key. None kalau gagal.
 
     Tiap langkah lewat `retry_after_refresh`: gagal → hard refresh (maks 2x) →
@@ -407,13 +446,17 @@ async def collect_key(page, site: Site, key_name: str, seen: set[str]) -> str | 
     await retry_after_refresh(page, f"buka halaman {site.name}", _open)
     await asyncio.sleep(human_delay(1.5, 3.0))
 
-    await retry_after_refresh(page, f"OAuth {site.name}", lambda: _oauth_flow(page, site))
+    await retry_after_refresh(
+        page, f"OAuth {site.name}", lambda: _oauth_flow(page, site, account)
+    )
 
     # Gagal → hard refresh → buat key baru sekali lagi. Key yang tampil sekali lalu
     # hilang tidak bisa dibaca ulang, jadi pemulihannya membuat key baru, bukan
     # mencari yang lama.
     key = await retry_after_refresh(
-        page, f"API key {site.name}", lambda: _create_and_capture(page, site, key_name, seen)
+        page,
+        f"API key {site.name}",
+        lambda: _create_and_capture(page, site, account.username, seen),
     )
     if key is MANUAL:
         key = await capture_key(page, seen)

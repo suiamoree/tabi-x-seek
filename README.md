@@ -78,9 +78,10 @@ Urutan per akun, lebih detail:
 3. Selesaikan slider captcha GitHub.
 4. **Baru** generate alamat email. Kalau captcha gagal, alamat tidak terbuang.
 5. Isi email, password, username, submit, ambil kode OTP 8 digit dari inbox.
-6. Login GitHub.
+6. Login GitHub, lalu jeda beberapa detik supaya sesinya mantap.
 7. Untuk tiap situs yang dipilih: centang consent, klik `Continue with GitHub`,
-   Authorize, buka `/keys`, buat API key, baca nilainya dari halaman.
+   login lagi kalau GitHub memintanya, Authorize, buka `/keys`, buat API key,
+   baca nilainya dari halaman.
 8. Key dikirim ke 9router dan/atau satu baris ditulis ke `akun.txt`, sesuai tujuan
    simpan yang dipilih.
 
@@ -159,6 +160,14 @@ MAIL_WORKER_URL=https://temp-mail.example.workers.dev
 MAIL_WORKER_PASSWORD=       # sama dengan APP_PASSWORD di Worker secret
 MAILTM_BASE_URL=https://api.mail.tm
 ```
+
+> [!NOTE]
+> Belum punya Worker temp-mail sendiri? Pakai
+> **[suiamoree/temp-mail](https://github.com/suiamoree/temp-mail)** — Cloudflare
+> Worker + D1 dengan API yang sudah cocok dengan `MAIL_PROVIDER=worker` di sini.
+> Deploy ke akun Cloudflare-mu, arahkan domainmu ke sana, lalu isi
+> `MAIL_WORKER_URL` dengan URL Worker itu dan `MAIL_WORKER_PASSWORD` dengan
+> `APP_PASSWORD` yang kamu set sebagai secret.
 
 > [!IMPORTANT]
 > Pakai `worker`. Dengan `mailtm`, akun GitHub yang baru selesai didaftarkan
@@ -791,6 +800,28 @@ tiga menit terbuang per akun.
 </details>
 
 <details>
+<summary><b>GitHub bisa minta login lagi di tengah OAuth</b></summary>
+
+Setelah `Continue with GitHub` diklik, halaman `/login/oauth/authorize` kadang
+menampilkan form login walau login sebelumnya sudah berhasil. Cookie sesi yang
+baru dibuat tidak selalu langsung diakui di endpoint OAuth.
+
+Dulu alurnya berhenti di situ: `_authorize_app` mencari tombol Authorize yang
+memang tidak ada di halaman login, gagal, lalu situsnya dianggap gagal. Sekarang
+`_login_if_asked` memeriksanya sebelum mencari Authorize, dan login ulang memakai
+kredensial akun yang sama.
+
+Karena itu `collect_key` menerima `GithubAccount` (username + password), bukan
+hanya username. `GithubAccount` frozen supaya kredensial satu akun tidak bisa
+berubah di tengah alur.
+
+Pencegahannya juga ditambah di sisi hulu: setelah login pertama, `github.login`
+menahan 4-6 detik (`POST_LOGIN_DELAY_MIN`/`MAX`) sebelum langkah berikutnya.
+Melanjutkan seketika adalah yang membuat halaman OAuth berikutnya masih melihat
+keadaan belum login.
+</details>
+
+<details>
 <summary><b>Nama connection 9router dijaga unik</b></summary>
 
 `POST /api/providers` dengan nama yang sudah ada **menimpa** connection lama,
@@ -814,6 +845,7 @@ satu nama yang kebetulan sama akan menghapus key yang sudah tersimpan.
 | `Please install Xvfb to use headless mode` | Mode virtual dipilih tapi Xvfb belum ada: `sudo apt install xvfb` |
 | API key tetap tidak terbaca | Mode semi: tempel sendiri di prompt terakhir. Kalau situsnya mengubah prefix dari `sk-`, lebarkan `API_KEY_PATTERN` di [bansos/selectors.py](bansos/selectors.py) — jangan turunkan `API_KEY_MIN_LENGTH`, itu yang menahan key terpotong ikut terbaca |
 | Key tersimpan masih ada `****` | Seharusnya tidak bisa terjadi — nilai bertopeng ditolak. Kalau situsnya memakai karakter topeng baru, tambahkan ke `KEY_TRUNCATION_MARKS` di [bansos/selectors.py](bansos/selectors.py) |
+| OAuth berhenti di halaman login GitHub | Ditangani otomatis — script login ulang lalu lanjut. Kalau tetap gagal, passwordnya (`GITHUB_PASSWORD`) berbeda dari yang dipakai saat signup |
 | Satu langkah selalu mentok padahal dulu lancar | Selector berubah. Semuanya ada di [bansos/selectors.py](bansos/selectors.py) |
 | Banyak akun `❌` tanpa alasan jelas | Kemungkinan jalan di mode auto: langkah yang mentok di-skip tanpa penjelasan panjang. Ulangi satu akun di mode semi untuk melihat langkah mana yang berhenti |
 
@@ -830,8 +862,8 @@ API key (utuh diterima, terpotong ditolak), penolakan nilai bertopeng
 antar situs, urutan eskalasi (dua hard refresh dulu, baru user), mode auto (skip
 tanpa prompt, jatah refresh tetap penuh), ekstraksi kode OTP untuk kedua bentuk
 payload, client mail.tm/worker/9router lewat `httpx.MockTransport`, format
-`akun.txt` (header run + baris berlabel situs), dan label tujuan simpan
-`RunOptions`.
+`akun.txt` (header run + baris berlabel situs), label tujuan simpan `RunOptions`,
+dan `GithubAccount` (frozen, jeda pasca-login bukan nol).
 
 Alur browser sungguhan tidak ikut — lihat
 [Yang tidak bisa dites otomatis](#yang-tidak-bisa-dites-otomatis).

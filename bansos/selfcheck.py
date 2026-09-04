@@ -33,7 +33,15 @@ from .browser import (
     new_session_id,
     proxy_username,
 )
-from .config import HARD_REFRESH_ATTEMPTS, RunOptions, Settings, Site
+from .config import (
+    HARD_REFRESH_ATTEMPTS,
+    POST_LOGIN_DELAY_MAX,
+    POST_LOGIN_DELAY_MIN,
+    GithubAccount,
+    RunOptions,
+    Settings,
+    Site,
+)
 from .errors import StepSkipped
 from .github import username_from_local_part
 from .mail.base import extract_code, plain_text, random_local_part
@@ -424,6 +432,28 @@ def check_run_options() -> None:
     assert second.seen_keys == set()
 
 
+def check_github_account() -> None:
+    """Password ikut dibawa ke alur situs, bukan hanya username.
+
+    GitHub bisa meminta login lagi di tengah OAuth, dan tanpa password di titik
+    itu alurnya berhenti — tombol Authorize tidak akan pernah muncul.
+    """
+    account = GithubAccount(username="k9xyzab", password="rahasia")
+    assert account.username == "k9xyzab"
+    assert account.password == "rahasia"
+
+    # frozen: kredensial satu akun tidak boleh berubah di tengah alur.
+    try:
+        account.username = "lain"  # type: ignore[misc]
+    except dataclasses.FrozenInstanceError:
+        pass
+    else:
+        raise AssertionError("GithubAccount harus frozen")
+
+    # Jeda pasca-login harus benar-benar ada, bukan nol.
+    assert 0 < POST_LOGIN_DELAY_MIN <= POST_LOGIN_DELAY_MAX
+
+
 def check_proxy_override() -> None:
     """Pilihan proxy di CLI diterapkan lewat salinan Settings, bukan global.
 
@@ -587,6 +617,7 @@ async def main() -> None:
     check_username()
     check_storage()
     check_run_options()
+    check_github_account()
     check_proxy_override()
     await check_mailtm_client()
     await check_worker_client()
