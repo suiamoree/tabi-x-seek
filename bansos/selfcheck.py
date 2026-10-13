@@ -47,6 +47,7 @@ from .config import (
 from .errors import StepSkipped
 from .github import username_from_local_part
 from .mail.base import extract_code, plain_text, random_local_part
+from .selectors import API_KEY_PATTERN
 from .mail.mailtm import MailTmMail, _epoch
 from .mail.worker import WorkerMail
 from .ninerouter import NineRouter
@@ -157,9 +158,13 @@ def check_key_extraction() -> None:
     """Key utuh diambil; versi terpotong dan bertopeng ditolak."""
     full = "sk-" + "AbCd1234EfGh5678IjKl9012MnOp3456QrSt7890UvWx"
     assert len(full) == 47, len(full)
+    # thk_live_ key format (TokenHarbor)
+    thk_full = "thk_live_O-ZR1f80B_I2OYaoH4Xay9kfkjrjtiicYhL99irVmvDJI2KaSLr-1deFWdTupeDY"
 
     assert pick_key([full]) == full
+    assert pick_key([thk_full]) == thk_full
     assert pick_key([f"Your key: {full} — copy it now"]) == full
+    assert pick_key([f"<code>{thk_full}</code>"]) == thk_full
     # Daftar key menampilkan versi terpotong; itu bukan key yang bisa dipakai.
     assert pick_key(["sk-AbCd1234EfG...", "sk-abc"]) is None
     # Yang terpanjang menang: potongan dan key utuh bisa ada di halaman yang sama.

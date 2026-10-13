@@ -7,27 +7,33 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 
 from . import github
 from .config import CONSENT_DELAY, DOM_READ_ATTEMPTS, OAUTH_ATTEMPTS, GithubAccount, Site
 from .human import human_delay
+from .mail.base import TOKENHARBOR_VERIFY_PATTERN, AGNES_OTP_PATTERN
 from .page import (
     click_first_visible,
     fill_input,
     find_visible,
     goto,
     has_text,
+    pass_cloudflare,
     retry_after_refresh,
     settle,
     wait_for_url_contains,
 )
 from .prompt import MANUAL, ask, is_auto
+from .errors import RateLimited, StepSkipped
 from .selectors import (
     API_KEY_MIN_LENGTH,
     API_KEY_PATTERN,
     KEY_TRUNCATION_MARKS,
     OAUTH_FAILED_TEXT,
     SITE,
+    TOKENHARBOR,
+    AGNES,
 )
 
 
@@ -122,15 +128,236 @@ async def _wait_dashboard(page, site: Site, timeout: float = 30.0) -> bool:
     )
 
 
-async def _oauth_flow(page, site: Site, account: GithubAccount) -> bool:
-    """consent → Continue with GitHub → (login lagi kalau diminta) → Authorize → dashboard.
+async def _tokenharbor_signup(page, mail, after: float, email: str | None = None) -> bool:
+    """Register akun TokenHarbor baru.
 
-    Satu kesatuan supaya bisa diulang utuh setelah hard refresh: refresh
-    mengosongkan checkbox consent dan bisa mengembalikan halaman ke sign-up, jadi
-    mengulang bagian akhirnya saja tidak cukup. Aman dijalankan ulang setelah OAuth
-    berhasil — consent dan tombolnya sudah tidak ada, dan URL dashboard langsung
-    memenuhi syarat selesai.
+    `email` boleh diisi dari luar supaya Agnes dan TokenHarbor bisa pakai alamat
+    yang sama dalam satu run. Kalau None, generate sendiri.
     """
+    await goto(page, "https://tokenharbor.ai/dashboard")
+    await asyncio.sleep(human_delay(2.0, 4.0))
+    await click_first_visible(page, TOKENHARBOR["cookie_banner"], optional=True)
+    await asyncio.sleep(human_delay(1.5, 3.0))
+
+    if not await click_first_visible(page, TOKENHARBOR["signup_tab"], label="TokenHarbor Sign up", escalate=False):
+        return False
+
+    # Cloudflare Turnstile muncul setelah klik Sign up — tunggu lolos dulu
+    print("→ Menunggu Cloudflare / form Sign up TokenHarbor muncul...")
+    await pass_cloudflare(page)
+    await asyncio.sleep(human_delay(3.0, 6.0))
+
+    if email is None:
+        email = await mail.new_address()
+
+    if not await fill_input(page, TOKENHARBOR["email"], email, label="TokenHarbor email"):
+        return False
+    await asyncio.sleep(human_delay(2.0, 4.0))
+
+    if not await fill_input(page, TOKENHARBOR["password"], "memekbasah212!", label="TokenHarbor password"):
+        return False
+    await asyncio.sleep(human_delay(2.0, 4.0))
+
+    if not await click_first_visible(page, TOKENHARBOR["submit_signup"], label="Create account", escalate=False):
+        return False
+
+    # Setelah submit bisa ada CF lagi atau modal "Enable free models"
+    await asyncio.sleep(human_delay(3.0, 5.0))
+    await pass_cloudflare(page)
+    await asyncio.sleep(human_delay(1.5, 3.0))
+
+    # Deteksi rate-limit TokenHarbor — lempar supaya runner ganti IP
+    if await has_text(page, "Too many sign-ups from this network"):
+        raise RateLimited("TokenHarbor: Too many sign-ups from this network")
+
+    # "too fast" = cooldown per-akun, bukan per-IP — skip akun ini saja
+    if await has_text(page, "take a breath and try again"):
+        raise StepSkipped("TokenHarbor: you're doing that a bit fast — akun dilewati")
+
+    await click_first_visible(page, TOKENHARBOR["enable_free_models"], label="Enable free models", optional=True)
+    await asyncio.sleep(human_delay(1.0, 2.5))
+    await click_first_visible(page, TOKENHARBOR["verify_email"], label="Verify email", optional=True)
+    await asyncio.sleep(human_delay(1.0, 2.0))
+
+    verify_url = await mail.wait_for_link(email, TOKENHARBOR_VERIFY_PATTERN, after=after)
+    if not verify_url:
+        return False
+
+    await goto(page, verify_url)
+    await asyncio.sleep(human_delay(2.0, 4.0))
+    return await _wait_dashboard(page, Site("TokenHarbor", "tokenharbor.ai", "", "tokenharbor", "", "/dashboard/api-keys", False), 30)
+
+async def _current_input_value(page, selectors: list[str]) -> str | None:
+    loc = await find_visible(page, selectors)
+    return await loc.input_value() if loc else None
+
+async def _tokenharbor_create_key(page, key_name: str) -> bool:
+    await goto(page, "https://tokenharbor.ai/dashboard/api-keys")
+    await asyncio.sleep(human_delay(2.0, 4.0))
+    if not await click_first_visible(page, TOKENHARBOR["new_key"], label="New key", escalate=False):
+        return False
+    await asyncio.sleep(human_delay(1.5, 3.0))
+    if not await fill_input(page, TOKENHARBOR["key_name"], key_name, label="TokenHarbor key name"):
+        return False
+    await asyncio.sleep(human_delay(1.5, 3.0))
+    return await click_first_visible(page, TOKENHARBOR["create_key"], label="Create key", escalate=False)
+
+async def _tokenharbor_collect(page, key_name: str, seen: set[str]) -> str | None:
+    if not await _tokenharbor_create_key(page, key_name):
+        return None
+
+    # Setelah "Create key" diklik, TH menampilkan key baru di elemen <code>
+    # di dalam modal/popup. Ambil yang TERAKHIR karena halaman bisa punya
+    # beberapa <code> dari key-key lama — key baru selalu yang paling bawah.
+    await asyncio.sleep(human_delay(1.5, 2.5))
+    for _ in range(DOM_READ_ATTEMPTS):
+        try:
+            # Evaluasi JS: ambil text dari semua <code class="input-float">,
+            # kembalikan yang paling panjang (= key baru utuh, bukan potongan).
+            candidates = await page.evaluate("""() => {
+                return Array.from(document.querySelectorAll('code.input-float, code'))
+                    .map(el => el.innerText.trim())
+                    .filter(v => v.length > 0);
+            }""")
+            if candidates:
+                # Pilih kandidat terpanjang yang belum pernah dilihat
+                for val in sorted(candidates, key=len, reverse=True):
+                    if len(val) >= API_KEY_MIN_LENGTH and val not in seen:
+                        return val
+        except Exception as exc:
+            print(f"⚠️  Gagal baca code element TokenHarbor: {exc}")
+        await asyncio.sleep(human_delay(0.8, 1.6))
+
+    # Fallback: input readonly di modal saja (bukan seluruh halaman)
+    modal_selectors = [
+        "dialog input[readonly]",
+        "dialog input[disabled]",
+        "[role='dialog'] input[readonly]",
+        "[role='dialog'] input[disabled]",
+        ".modal input[readonly]",
+        ".modal input[disabled]",
+    ]
+    el = await find_visible(page, modal_selectors)
+    if el:
+        try:
+            val = (await el.input_value()).strip()
+        except Exception:
+            val = ""
+        if val and len(val) >= API_KEY_MIN_LENGTH and val not in seen:
+            return val
+
+    return None
+
+
+# ─── Agnes AI (email + OTP signup, then API key dashboard) ──────────────────
+
+async def _agnes_signup(page, mail, password: str, after: float, email: str | None = None) -> bool:
+    """Register akun Agnes AI baru lewat email + 6-digit OTP.
+
+    `email` boleh diisi dari luar supaya Agnes dan TokenHarbor bisa pakai alamat
+    yang sama dalam satu run. Kalau None, generate sendiri.
+    """
+    if email is None:
+        email = await mail.new_address()
+    print(f"→ Agnes signup email: {email}")
+
+    await goto(page, "https://platform.agnes-ai.com/login")
+    await asyncio.sleep(human_delay(2.0, 4.0))
+
+    # Klik link Sign Up
+    if not await click_first_visible(page, AGNES["signup_link"], label="Agnes Sign Up", escalate=False):
+        return False
+    await asyncio.sleep(human_delay(1.5, 3.0))
+
+    # Isi email
+    if not await fill_input(page, AGNES["email"], email, label="Agnes email"):
+        return False
+    await asyncio.sleep(human_delay(1.5, 3.0))
+
+    # Klik tombol kirim kode (gambar amplop)
+    if not await click_first_visible(page, AGNES["send_code"], label="Agnes send code", escalate=False):
+        return False
+
+    # Tunggu OTP 6 digit dari inbox
+    print(f"→ Menunggu OTP Agnes di inbox {email}...")
+    code = await mail.wait_for_code(email, after=after, pattern=AGNES_OTP_PATTERN)
+    if not code:
+        print("✗ OTP Agnes tidak masuk dalam batas waktu")
+        return False
+    print(f"→ OTP Agnes diterima: {code}")
+
+    if not await fill_input(page, AGNES["verification_code"], code, label="Agnes OTP"):
+        return False
+    await asyncio.sleep(human_delay(1.0, 2.0))
+    if not await fill_input(page, AGNES["password"], password, label="Agnes password"):
+        return False
+    await asyncio.sleep(human_delay(1.0, 2.0))
+    if not await fill_input(page, AGNES["confirm_password"], password, label="Agnes confirmPassword"):
+        return False
+    await asyncio.sleep(human_delay(1.5, 3.0))
+
+    if not await click_first_visible(page, AGNES["submit_continue"], label="Agnes Continue", escalate=False):
+        return False
+
+    # Tunggu landing di dashboard (URL berisi /api-keys atau /)
+    await asyncio.sleep(human_delay(3.0, 5.0))
+    return "platform.agnes-ai.com" in page.url and "login" not in page.url
+
+
+async def _agnes_create_key(page, key_name: str) -> bool:
+    """Buka halaman API keys Agnes, buat key baru, simpan."""
+    await goto(page, "https://platform.agnes-ai.com/settings/apiKeys")
+    await asyncio.sleep(human_delay(2.0, 4.0))
+
+    if not await click_first_visible(page, AGNES["create_key_btn"], label="Agnes create key", escalate=False):
+        return False
+    await asyncio.sleep(human_delay(2.0, 3.5))
+
+    if not await fill_input(page, AGNES["key_name"], key_name, label="Agnes key name"):
+        return False
+    await asyncio.sleep(human_delay(1.5, 3.0))
+
+    if not await click_first_visible(page, AGNES["save_key"], label="Agnes Save", escalate=False):
+        return False
+    await asyncio.sleep(human_delay(2.0, 3.5))
+    return True
+
+
+async def _agnes_collect(page, key_name: str, seen: set[str]) -> str | None:
+    """Buat key Agnes lalu ambil nilainya dari disabled input di modal."""
+    if not await _agnes_create_key(page, key_name):
+        return None
+
+    # Baca dari disabled input di modal — Agnes punya format key sendiri yang
+    # tidak selalu diawali sk- atau thk_live_, jadi validasi hanya pakai panjang
+    # minimum, bukan regex prefix. pick_key dilewati untuk path ini.
+    for _ in range(DOM_READ_ATTEMPTS):
+        el = await find_visible(page, AGNES["api_key_input"])
+        if el:
+            try:
+                val = (await el.input_value()).strip()
+            except Exception:
+                val = ""
+            if val and len(val) >= API_KEY_MIN_LENGTH:
+                if val in seen:
+                    print(f"⚠️  Key Agnes sama dengan yang sudah diambil — ditolak")
+                    return None
+                return val
+        await asyncio.sleep(human_delay(0.8, 1.6))
+
+    # Fallback ke DOM scrape (tangkap pola sk- kalau Agnes berubah format)
+    return await _poll_dom_key(page, seen)
+
+
+async def _agnes_signup_and_collect(page, mail, password: str, key_name: str, seen: set[str], email: str | None = None) -> str | None:
+    after = time.time()
+    if not await _agnes_signup(page, mail, password, after, email=email):
+        return None
+    return await _agnes_collect(page, key_name, seen)
+
+
+async def _oauth_flow(page, site: Site, account: GithubAccount) -> bool:
+    """consent → Continue with GitHub → (login lagi kalau diminta) → Authorize → dashboard."""
     if await _wait_dashboard(page, site, timeout=1.0):
         return True
 
@@ -423,7 +650,7 @@ async def _ask_key_manually(page, site: Site, seen: set[str]) -> str | None:
     return typed
 
 async def collect_key(
-    page, site: Site, account: GithubAccount, seen: set[str]
+    page, site: Site, account: GithubAccount, seen: set[str], mail=None, shared_email: str | None = None
 ) -> str | None:
     """Sign-up via GitHub → buat API key → ambil key. None kalau gagal.
 
@@ -437,7 +664,23 @@ async def collect_key(
     """
     print(f"\n{'─' * 60}")
     print(f"SITE: {site.name} ({site.host})")
-    print(f"{'─' * 60}")
+    if not site.requires_github:
+        if mail is None:
+            return None
+        # Key name = local part email (bagian sebelum @)
+        email_for_name = shared_email or ""
+        key_name = email_for_name.split("@")[0] if email_for_name else "direct"
+        if site.name == "AgnesAI":
+            key = await _agnes_signup_and_collect(page, mail, "memekbasah212!", key_name, seen, email=shared_email)
+        else:
+            if not await _tokenharbor_signup(page, mail, time.time(), email=shared_email):
+                return None
+            key = await _tokenharbor_collect(page, key_name, seen)
+        # Tambah ke seen lokal supaya clipboard/DOM read berikutnya dalam slot ini
+        # tidak membaca ulang key yang sama. Inter-slot dedup diurus runner via lock.
+        if key:
+            seen.add(key)
+        return key
 
     async def _open() -> bool:
         await goto(page, site.signup_url)
@@ -467,6 +710,6 @@ async def collect_key(
         print(f"✗ API key {site.name} kosong")
         return None
 
-    seen.add(key)
+    seen.add(key)  # intra-slot dedup
     print(f"✓ API key {site.name}: {key}")
     return key

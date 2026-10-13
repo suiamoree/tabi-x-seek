@@ -12,6 +12,15 @@ class BotBlocked(Exception):
     """
 
 
+class RateLimited(Exception):
+    """Provider menolak signup karena terlalu banyak akun dari jaringan ini.
+
+    Dilempar ke runner supaya browser di-relaunch dengan session_id (IP) baru.
+    Berbeda dari BotBlocked yang terikat ke fingerprint — RateLimited murni
+    masalah IP/jaringan, jadi cukup ganti IP tanpa perlu identitas baru.
+    """
+
+
 class EmailRejected(Exception):
     """GitHub menolak alamat email (domain temp-mail masuk daftar blokir)."""
 

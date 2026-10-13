@@ -11,11 +11,12 @@ Password dikirim mentah di setiap request, jadi base URL wajib https.
 from __future__ import annotations
 
 import random
+import re
 
 import httpx
 
 from ..config import HTTP_TIMEOUT
-from .base import extract_code, poll_for_code, random_local_part
+from .base import extract_code, poll_for_code, random_local_part, PROVIDER_KEYWORDS
 
 # Worker memisahkan "klien salah password" (401) dari "server lupa set secret" (503).
 _AUTH_HINT = {
@@ -62,7 +63,27 @@ class WorkerMail:
             raise RuntimeError("worker tidak punya domain aktif")
         return f"{random_local_part()}@{random.choice(domains)}"
 
-    async def wait_for_code(self, address: str, after: float = 0.0) -> str | None:
+    async def inbox_empty(self, address: str) -> bool:
+        """True kalau inbox belum pernah menerima email apapun."""
+        try:
+            summaries = await self._get(f"/emails/{address}?limit=1")
+            return len(summaries) == 0
+        except Exception:
+            return False
+
+    async def provider_mail_present(self, address: str) -> bool:
+        """True kalau ada email dari Agnes atau TokenHarbor di inbox."""
+        try:
+            summaries = await self._get(f"/emails/{address}?limit=50")
+            return any(
+                PROVIDER_KEYWORDS.search(s.get("subject") or "")
+                or PROVIDER_KEYWORDS.search(s.get("from") or "")
+                for s in summaries
+            )
+        except Exception:
+            return False
+
+    async def wait_for_code(self, address: str, after: float = 0.0, pattern: re.Pattern | None = None) -> str | None:
         async def list_messages():
             summaries = await self._get(f"/emails/{address}?limit=20")
             return [(s["id"], float(s.get("received_at") or 0)) for s in summaries]
@@ -70,7 +91,27 @@ class WorkerMail:
         async def read_code(message_id: str):
             email = await self._get(f"/inbox/{message_id}")
             return extract_code(
-                email.get("subject"), email.get("text_content"), email.get("html_content")
+                email.get("subject"), email.get("text_content"), email.get("html_content"),
+                **({"pattern": pattern} if pattern else {}),
             )
 
         return await poll_for_code(list_messages, read_code, after=after)
+
+    async def wait_for_link(
+        self, address: str, pattern: re.Pattern[str], after: float = 0.0
+    ) -> str | None:
+        async def list_messages():
+            summaries = await self._get(f"/emails/{address}?limit=20")
+            return [(s["id"], float(s.get("received_at") or 0)) for s in summaries]
+
+        async def read_link(message_id: str):
+            email = await self._get(f"/inbox/{message_id}")
+            body = (
+                f"{email.get('subject') or ''} "
+                f"{email.get('text_content') or ''} "
+                f"{email.get('html_content') or ''}"
+            )
+            match = pattern.search(body)
+            return match.group(0) if match else None
+
+        return await poll_for_code(list_messages, read_link, after=after)

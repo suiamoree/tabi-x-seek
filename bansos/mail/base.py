@@ -17,10 +17,21 @@ from ..config import OTP_POLL_INTERVAL, OTP_TIMEOUT
 
 # GitHub launch code = 8 digit. Lookaround mencegah nyangkut di angka panjang.
 OTP_PATTERN = re.compile(r"(?<!\d)(\d{8})(?!\d)")
+TOKENHARBOR_VERIFY_PATTERN = re.compile(r"https?://tokenharbor\.ai/verify-email\?token=[A-Za-z0-9._~-]+")
+# Agnes AI verification code = 6 digit.
+AGNES_OTP_PATTERN = re.compile(r"(?<!\d)(\d{6})(?!\d)")
 
 _LOCAL_ALPHABET = string.ascii_lowercase + string.digits
 _HTML_TAG = re.compile(r"<[^>]+>")
 _WHITESPACE = re.compile(r"\s+")
+
+
+# Kata kunci di subject/sender yang menandai email dari Agnes atau TokenHarbor.
+# Dipakai oleh provider_mail_present di tiap implementasi.
+PROVIDER_KEYWORDS = re.compile(
+    r"agnes|tokenharbor|token\s*harbor",
+    re.IGNORECASE,
+)
 
 
 class MailProvider(Protocol):
@@ -28,9 +39,34 @@ class MailProvider(Protocol):
 
     async def new_address(self) -> str: ...
 
-    async def wait_for_code(self, address: str, after: float = 0.0) -> str | None: ...
+    async def inbox_empty(self, address: str) -> bool: ...
+
+    async def provider_mail_present(self, address: str) -> bool:
+        """True kalau inbox sudah pernah dapat email dari Agnes atau TokenHarbor."""
+        ...
+
+    async def wait_for_code(self, address: str, after: float = 0.0, pattern: re.Pattern | None = None) -> str | None: ...
+
+    async def wait_for_link(
+        self, address: str, pattern: re.Pattern[str], after: float = 0.0
+    ) -> str | None: ...
 
     async def aclose(self) -> None: ...
+
+
+async def new_fresh_address(mail: "MailProvider", max_attempts: int = 10) -> str:
+    """Generate alamat email yang belum pernah menerima email dari Agnes atau TokenHarbor.
+
+    Email yang sudah dapat email dari kedua provider itu berarti sudah pernah
+    didaftarkan — provider menolak "email already registered". Email yang dapat
+    email dari sumber lain masih aman dipakai.
+    """
+    for _ in range(max_attempts):
+        address = await mail.new_address()
+        if not await mail.provider_mail_present(address):
+            return address
+        print(f"\u26a0\ufe0f  Inbox {address} sudah pernah dapat email Agnes/TokenHarbor — generate ulang")
+    raise RuntimeError(f"Tidak dapat menemukan alamat email bebas setelah {max_attempts} percobaan")
 
 
 def random_local_part(length: int = 12) -> str:

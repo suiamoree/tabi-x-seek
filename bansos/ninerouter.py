@@ -156,6 +156,8 @@ async def connect(config: Settings) -> NineRouter | None:
     available = await client.node_ids()
     if available:
         for site in config.sites:
+            if site.provider_node_id in ("tokenharbor", "agnes"):
+                continue
             if site.provider_node_id not in available:
                 print(f"⚠️  Node id {site.name} tidak ada di 9router: {site.provider_node_id}")
 

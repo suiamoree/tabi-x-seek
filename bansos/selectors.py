@@ -67,16 +67,109 @@ SITE = {
     ],
 }
 
-# Bentuk API key yang dikeluarkan situs target: `sk-` + 48 karakter alnum.
+TOKENHARBOR = {
+    "cookie_banner": [
+        "button:has-text('Essential only')",
+        "button:has-text('Accept analytics')",
+    ],
+    "signup_tab": [
+        "button:has-text('Sign up')",
+        "button[data-no-press='true']:has-text('Sign up')",
+    ],
+    "email": ["input[name='email']", "input[type='email']"],
+    "password": ["input[name='password']", "input[type='password']"],
+    "invite_code": ["input[name='invite_code']"],
+    "submit_signup": [
+        "button[data-analytics='login-signup']",
+        "button[type='submit']:has-text('Create account')",
+        "form button[type='submit']",
+    ],
+    "enable_free_models": [
+        "button[data-analytics='freemodel-consent-enable']",
+        "button:has-text('Enable free models')",
+    ],
+    "verify_email": [
+        "button:has-text('Verify email')",
+    ],
+    "new_key": [
+        "button:has-text('+ New key')",
+        "button:has-text('New key')",
+    ],
+    "key_name": [
+        "input[placeholder*='Cursor']",
+        "input[placeholder*='Production']",
+        "input[placeholder*='Side project']",
+    ],
+    "create_key": [
+        "button:has-text('Create key')",
+    ],
+    "api_key_code": [
+        "code.input-float",
+        "code",
+    ],
+}
+
+AGNES = {
+    "signup_link": [
+        "a.login_signupLink__limgH",
+        "div.login_signupText__4ZfR4 > a",
+        "a:has-text('Sign Up')",
+    ],
+    "email": [
+        "input#email",
+        "input[placeholder='Email']",
+    ],
+    "send_code": [
+        "img[alt='can send']",
+        "img[src*='new_canSend']",
+        ".login_formSection__2z275 form img",
+    ],
+    "verification_code": [
+        "input#verification_code",
+        "input[placeholder='Verification Code']",
+    ],
+    "password": [
+        "input#password",
+        "input[placeholder='Password']",
+    ],
+    "confirm_password": [
+        "input#confirmPassword",
+        "input[placeholder='Please confirm your password']",
+    ],
+    "submit_continue": [
+        "button.login_submitBtn__Ckyzc",
+        "button[type='submit']:has-text('Continue')",
+        "button[type='submit']",
+    ],
+    "create_key_btn": [
+        "div.apiKeysTable_actionsRow__y4qgQ > button",
+        "button:has-text('Create new secret key')",
+    ],
+    "key_name": [
+        "input#keyName",
+        "input[placeholder='Please enter a key name']",
+    ],
+    "save_key": [
+        "div.ant-modal-footer button.ant-btn-primary",
+        "button:has-text('Save')",
+    ],
+    "api_key_input": [
+        "div.ant-modal-body input.ant-input-disabled",
+        "input.ant-input-disabled",
+    ],
+}
+
+# Bentuk API key yang dikeluarkan situs target: `sk-` atau `thk_live_` + karakter alnum.
 # Dipakai untuk membaca key langsung dari DOM, jadi tombol Copy + izin clipboard
 # bukan satu-satunya jalan.
 #
 # Kedua lookaround memaksa match menjadi run alnum yang utuh: tanpa itu, regex
 # bisa mundur (backtrack) dan mengembalikan potongan depan dari nilai yang
 # sebetulnya bertopeng, mis. `sk-<45 char>****<sisanya>`.
-# ponytail: dipatok prefix `sk-` karena kedua situs memakainya. Situs baru dengan
-# prefix lain → lebarkan pola ini, bukan menurunkan API_KEY_MIN_LENGTH.
-API_KEY_PATTERN = re.compile(r"(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])")
+# ponytail: dipatok prefix sk- dan thk_live_ sesuai situs yang didukung.
+API_KEY_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_-])(?:sk-|thk_live_)[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])"
+)
 
 # Panjang minimum agar sebuah kandidat dianggap key utuh. Daftar key menampilkan
 # versi terpotong (`sk-AbCd1234EfG...`) yang juga cocok dengan pola di atas; key

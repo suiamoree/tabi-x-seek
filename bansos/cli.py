@@ -41,12 +41,33 @@ async def _account_count() -> int:
 
 
 async def _pick_sites(available: tuple[Site, ...]) -> tuple[Site, ...]:
-    """Semua situs, atau satu saja. Urutan aslinya dipertahankan."""
+    """Semua situs, kombinasi direct-only, atau satu saja."""
+    direct = tuple(s for s in available if not s.requires_github)
+    github = tuple(s for s in available if s.requires_github)
+
     options: dict[str, tuple[str, tuple[Site, ...]]] = {
-        "1": (f"semua ({', '.join(site.name for site in available)})", available)
+        "1": (f"semua ({', '.join(s.name for s in available)})", available),
     }
-    for index, site in enumerate(available, start=2):
-        options[str(index)] = (f"{site.name} saja", (site,))
+    idx = 2
+    # Kombinasi Agnes + TokenHarbor (tanpa GitHub) kalau keduanya ada
+    if len(direct) > 1:
+        options[str(idx)] = (
+            f"{' + '.join(s.name for s in direct)} saja (tanpa GitHub)",
+            direct,
+        )
+        idx += 1
+    # GitHub sites saja (tanpa direct)
+    if github and direct:
+        options[str(idx)] = (
+            f"{' + '.join(s.name for s in github)} saja (butuh GitHub)",
+            github,
+        )
+        idx += 1
+    # Satu situs individual
+    for site in available:
+        options[str(idx)] = (f"{site.name} saja", (site,))
+        idx += 1
+
     return await _pick("Situs yang dikerjakan", options, default_key="1")
 
 
@@ -98,6 +119,17 @@ async def _run_mode() -> bool:
     )
 
 
+async def _concurrency(total: int) -> int:
+    """Input bebas 1–10; default = min(total, 5)."""
+    default = min(total, 5)
+    while True:
+        raw = await ask(f"Concurrent browser (1–10, Enter = {default}): ")
+        if not raw:
+            return default
+        if raw.isdigit() and 1 <= int(raw) <= 10:
+            return int(raw)
+        print("✗ Masukkan angka 1–10")
+
 async def _browser_mode() -> bool | str:
     modes = browser.available_modes()
     default = next(key for key, (_, value) in modes.items() if value == browser.DEFAULT_MODE)
@@ -105,13 +137,8 @@ async def _browser_mode() -> bool | str:
     return await _pick("Mode browser", modes, default_key=default, note=note)
 
 
-async def _ask_options(config: Settings) -> tuple[Settings, RunOptions, int] | None:
-    """Semua pertanyaan sebelum run. None kalau jumlah akun tidak valid.
-
-    `config` dikembalikan dalam bentuk baru dengan `sites` yang sudah disaring dan
-    `proxy_enabled` sesuai pilihan, jadi sisa alur tidak perlu tahu bahwa user
-    pernah memilih apa pun.
-    """
+async def _ask_options(config: Settings) -> tuple[Settings, RunOptions, int, int] | None:
+    """Semua pertanyaan sebelum run. None kalau jumlah akun tidak valid."""
     total = await _account_count()
     if not total:
         return None
@@ -120,6 +147,7 @@ async def _ask_options(config: Settings) -> tuple[Settings, RunOptions, int] | N
     chosen = await _pick_sites(config.sites)
     save_file, push_router = await _pick_targets()
     prompt.set_auto(await _run_mode())
+    concurrency = await _concurrency(total)
     options = RunOptions(
         browser_mode=await _browser_mode(),
         save_file=save_file,
@@ -129,12 +157,13 @@ async def _ask_options(config: Settings) -> tuple[Settings, RunOptions, int] | N
 
     mode = "auto (tanpa prompt)" if prompt.is_auto() else "semi (eskalasi ke user)"
     print(f"\n→ Jumlah akun  : {total}")
+    print(f"→ Concurrent   : {concurrency} browser sekaligus")
     print(f"→ Proxy        : {'aktif — ' + config.proxy_host if use_proxy else 'tidak dipakai'}")
     print(f"→ Situs        : {', '.join(site.name for site in chosen)}")
     print(f"→ Simpan ke    : {options.targets}")
     print(f"→ Mode jalan   : {mode}")
     print(f"→ Mode browser : {browser.mode_label(options.browser_mode)}")
-    return dataclasses.replace(config, sites=chosen, proxy_enabled=use_proxy), options, total
+    return dataclasses.replace(config, sites=chosen, proxy_enabled=use_proxy), options, total, concurrency
 
 
 async def main() -> None:
@@ -145,7 +174,7 @@ async def main() -> None:
     asked = await _ask_options(settings())
     if asked is None:
         return
-    config, options, total = asked
+    config, options, total, concurrency = asked
 
     router = None
     if options.push_router:
@@ -159,17 +188,9 @@ async def main() -> None:
         storage.begin_run(total, [site.name for site in config.sites], options.targets)
 
     mail = make_mail(config)
-    succeeded = 0
 
     try:
-        for index in range(1, total + 1):
-            print(f"\n[{index}/{total}] Memproses akun...")
-            if await runner.run_account(mail, router, config, options):
-                succeeded += 1
-                print(f"✅ Akun [{index}/{total}] berhasil")
-            else:
-                print(f"❌ Akun [{index}/{total}] gagal")
-
+        succeeded = await runner.run_concurrent(mail, router, config, options, total, concurrency)
         print(f"\n{'=' * 60}")
         print(f"✅ SELESAI — {succeeded}/{total} akun berhasil")
         print("=" * 60)

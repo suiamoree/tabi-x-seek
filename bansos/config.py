@@ -6,6 +6,7 @@ tidak ada `os.getenv()` yang tersebar di modul lain.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 from dataclasses import dataclass, field
@@ -92,10 +93,12 @@ class Site:
     signup_url: str
     provider_node_id: str
     model: str
+    keys_path: str = "/keys"
+    requires_github: bool = True
 
     @property
     def keys_url(self) -> str:
-        return f"https://{self.host}/keys"
+        return f"https://{self.host}{self.keys_path}"
 
 
 @dataclass(frozen=True)
@@ -118,6 +121,9 @@ class RunOptions:
     `seen_keys` dipakai bersama seluruh run, bukan per akun: tombol Copy menulis ke
     clipboard OS yang sama untuk semua browser, jadi satu klik yang gagal tanpa
     error bisa membuat key akun sebelumnya terbaca lagi sebagai key akun ini.
+
+    `seen_lock` melindungi `seen_keys` dari race condition saat concurrent slots
+    mencoba menambah key di waktu yang sama.
     """
 
     browser_mode: bool | str = False
@@ -125,6 +131,7 @@ class RunOptions:
     push_router: bool = True
     use_proxy: bool = False
     seen_keys: set[str] = field(default_factory=set)
+    seen_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
     def targets(self) -> str:
@@ -198,6 +205,24 @@ def _sites(default_model: str) -> tuple[Site, ...]:
             signup_url="https://seekai.cc/sign-up?aff=s2N9",
             provider_node_id="openai-compatible-chat-91520b61-f4c9-4020-a30a-57f92c733777",
             model=default_model,
+        ),
+        Site(
+            name="TokenHarbor",
+            host="tokenharbor.ai",
+            signup_url="https://tokenharbor.ai/dashboard",
+            provider_node_id="tokenharbor",
+            model="deepseek-v4.1-flash:free",
+            keys_path="/dashboard/api-keys",
+            requires_github=False,
+        ),
+        Site(
+            name="AgnesAI",
+            host="platform.agnes-ai.com",
+            signup_url="https://platform.agnes-ai.com/login",
+            provider_node_id="agnes",
+            model=os.getenv("AGNES_MODEL", "agnes-2.5-pro").strip(),
+            keys_path="/api-keys",
+            requires_github=False,
         ),
     )
 

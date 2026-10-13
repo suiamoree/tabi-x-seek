@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import random
+import re
 from datetime import datetime
 
 import httpx
 
 from ..config import HTTP_TIMEOUT
-from .base import extract_code, poll_for_code, random_local_part, random_password
+from .base import extract_code, poll_for_code, random_local_part, random_password, PROVIDER_KEYWORDS
 
 RATE_LIMIT_BACKOFF = 1.5
 
@@ -69,7 +70,33 @@ class MailTmMail:
         self._tokens[address] = token
         return address
 
-    async def wait_for_code(self, address: str, after: float = 0.0) -> str | None:
+    async def inbox_empty(self, address: str) -> bool:
+        """True kalau inbox belum pernah menerima email apapun."""
+        token = self._tokens.get(address)
+        if not token:
+            return False
+        try:
+            body = await self._request("GET", "/messages", token=token)
+            return len(body.get("hydra:member", [])) == 0
+        except Exception:
+            return False
+
+    async def provider_mail_present(self, address: str) -> bool:
+        """True kalau ada email dari Agnes atau TokenHarbor di inbox."""
+        token = self._tokens.get(address)
+        if not token:
+            return False
+        try:
+            body = await self._request("GET", "/messages", token=token)
+            return any(
+                PROVIDER_KEYWORDS.search(m.get("subject") or "")
+                or PROVIDER_KEYWORDS.search((m.get("from") or {}).get("address") or "")
+                for m in body.get("hydra:member", [])
+            )
+        except Exception:
+            return False
+
+    async def wait_for_code(self, address: str, after: float = 0.0, pattern: re.Pattern | None = None) -> str | None:
         token = self._tokens.get(address)
         if not token:
             raise RuntimeError(f"belum ada token mail.tm untuk {address}")
@@ -81,6 +108,30 @@ class MailTmMail:
         async def read_code(message_id: str):
             message = await self._request("GET", f"/messages/{message_id}", token=token)
             # `html` di mail.tm berbentuk list of string, bukan string.
-            return extract_code(message.get("subject"), message.get("text"), message.get("html"))
+            return extract_code(
+                message.get("subject"), message.get("text"), message.get("html"),
+                **({"pattern": pattern} if pattern else {}),
+            )
 
         return await poll_for_code(list_messages, read_code, after=after)
+
+    async def wait_for_link(
+        self, address: str, pattern: re.Pattern[str], after: float = 0.0
+    ) -> str | None:
+        token = self._tokens.get(address)
+        if not token:
+            raise RuntimeError(f"belum ada token mail.tm untuk {address}")
+
+        async def list_messages():
+            body = await self._request("GET", "/messages", token=token)
+            return [(m["id"], _epoch(m.get("createdAt"))) for m in body.get("hydra:member", [])]
+
+        async def read_link(message_id: str):
+            message = await self._request("GET", f"/messages/{message_id}", token=token)
+            html = message.get("html")
+            html_text = " ".join(html) if isinstance(html, list) else str(html or "")
+            body = f"{message.get('subject') or ''} {message.get('text') or ''} {html_text}"
+            match = pattern.search(body)
+            return match.group(0) if match else None
+
+        return await poll_for_code(list_messages, read_link, after=after)

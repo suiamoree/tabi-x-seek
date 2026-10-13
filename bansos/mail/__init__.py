@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from ..config import Settings
-from .base import MailProvider
+from .base import MailProvider, new_fresh_address
 from .mailtm import MailTmMail
 from .worker import WorkerMail
 
-__all__ = ["MailProvider", "make_mail"]
+__all__ = ["MailProvider", "make_mail", "new_fresh_address"]
 
 
 def make_mail(config: Settings) -> MailProvider:
