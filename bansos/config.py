@@ -149,6 +149,7 @@ class Settings:
     mailtm_base_url: str
     ninerouter_url: str
     ninerouter_password: str
+    gmail_file: str
     proxy_enabled: bool
     proxy_host: str
     proxy_user: str
@@ -259,6 +260,7 @@ def settings() -> Settings:
         # Bukan `_required`: run yang hanya menyimpan ke akun.txt tidak menyentuh
         # 9router sama sekali. `ninerouter.connect` yang menolak kalau kosong.
         ninerouter_password=os.getenv("NINEROUTER_PASSWORD", "").strip(),
+        gmail_file=os.getenv("GMAIL_FILE", "gmail.txt").strip(),
         proxy_enabled=_flag("PROXY_ENABLED"),
         proxy_host=os.getenv("PROXY_HOST", "gw.dataimpulse.com:823").strip(),
         proxy_user=os.getenv("PROXY_USER", "").strip(),

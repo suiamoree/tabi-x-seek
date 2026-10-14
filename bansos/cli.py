@@ -7,9 +7,10 @@ bawahnya tahu apakah boleh bertanya ke user tanpa perlu meneruskan flag.
 from __future__ import annotations
 
 import dataclasses
+import os
 import traceback
 
-from . import browser, ninerouter, prompt, runner, storage
+from . import browser, codebuddy, ninerouter, prompt, runner, storage
 from .config import RunOptions, Settings, Site, settings
 from .mail import make_mail
 from .prompt import ask
@@ -40,15 +41,16 @@ async def _account_count() -> int:
     return int(raw)
 
 
-async def _pick_sites(available: tuple[Site, ...]) -> tuple[Site, ...]:
-    """Semua situs, kombinasi direct-only, atau satu saja."""
+async def _pick_sites(available: tuple[Site, ...]) -> tuple[Site, ...] | None:
+    """Semua situs, kombinasi direct-only, satu saja, atau CodeBuddy (None)."""
     direct = tuple(s for s in available if not s.requires_github)
     github = tuple(s for s in available if s.requires_github)
 
-    options: dict[str, tuple[str, tuple[Site, ...]]] = {
+    options: dict[str, tuple[str, tuple[Site, ...] | None]] = {
         "1": (f"semua ({', '.join(s.name for s in available)})", available),
+        "2": ("CodeBuddy (OAuth Google — pakai gmail.txt, alur terpisah)", None),
     }
-    idx = 2
+    idx = 3
     # Kombinasi Agnes + TokenHarbor (tanpa GitHub) kalau keduanya ada
     if len(direct) > 1:
         options[str(idx)] = (
@@ -145,6 +147,14 @@ async def _ask_options(config: Settings) -> tuple[Settings, RunOptions, int, int
 
     use_proxy = await _pick_proxy(config)
     chosen = await _pick_sites(config.sites)
+    if chosen is None:
+        # CodeBuddy: config dengan proxy_enabled sesuai pilihan user
+        return dataclasses.replace(config, sites=(), proxy_enabled=use_proxy), RunOptions(
+            browser_mode=False,
+            save_file=False,
+            push_router=True,
+            use_proxy=use_proxy,
+        ), 1, 1
     save_file, push_router = await _pick_targets()
     prompt.set_auto(await _run_mode())
     concurrency = await _concurrency(total)
@@ -166,6 +176,45 @@ async def _ask_options(config: Settings) -> tuple[Settings, RunOptions, int, int
     return dataclasses.replace(config, sites=chosen, proxy_enabled=use_proxy), options, total, concurrency
 
 
+async def _run_codebuddy(config: Settings, options: RunOptions) -> None:
+    """Jalankan alur CodeBuddy (OAuth Google ke 9router).
+
+    Tidak pakai browser mode dari CLI karena alur ini selalu non-headless
+    (tombol OAuth butuh interaksi manual di halaman yang berubah-ubah).
+    """
+    print("\n" + "=" * 60)
+    print("CODEBUDDY — OAuth Google ke 9router")
+    print("=" * 60)
+
+    gmail_file = os.getenv("GMAIL_FILE", "gmail.txt").strip()
+    try:
+        accounts = codebuddy.load_gmail_accounts(gmail_file)
+    except (OSError, ValueError) as exc:
+        print(f"✗ {exc}")
+        return
+    if not accounts:
+        print(f"✗ Tidak ada email di {gmail_file}")
+        return
+    print(f"→ {len(accounts)} akun Google dari {gmail_file}")
+
+    router = await ninerouter.connect(config)
+    if router is None:
+        print("   Cek NINEROUTER_URL dan NINEROUTER_PASSWORD di .env, lalu ulangi.")
+        return
+
+    try:
+        ok = await codebuddy.add_codebuddy(config, router, accounts)
+        print(f"\n{'=' * 60}")
+        print(f"{'✅ BERHASIL' if ok else '❌ GAGAL'} — CodeBuddy OAuth")
+        print("=" * 60)
+    except KeyboardInterrupt:
+        print("\n⚠  Dihentikan user")
+    except Exception as exc:
+        print(f"\n❌ Error: {exc}")
+        traceback.print_exc()
+    finally:
+        await router.aclose()
+
 async def main() -> None:
     print("=" * 60)
     print("TABI X SEEK AUTOMATION")
@@ -175,6 +224,10 @@ async def main() -> None:
     if asked is None:
         return
     config, options, total, concurrency = asked
+
+    if not config.sites:
+        await _run_codebuddy(config, options)
+        return
 
     router = None
     if options.push_router:
