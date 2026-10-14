@@ -61,6 +61,17 @@ class NineRouter:
             return set()
         return {node["id"] for node in response.json().get("nodes", []) if node.get("id")}
 
+    async def count_provider(self, provider: str) -> int:
+        """Jumlah connection untuk satu provider. -1 kalau API gagal."""
+        try:
+            response = await self._client.get("/api/providers")
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            print(f"⚠️  Gagal ambil daftar connection: {exc}")
+            return -1
+        connections = response.json().get("connections") or []
+        return sum(1 for c in connections if c.get("provider") == provider)
+
     async def load_existing_names(self) -> None:
         """Ambil nama connection yang sudah ada supaya tidak ada yang ditimpa."""
         self._taken_names = await self._existing_names()
